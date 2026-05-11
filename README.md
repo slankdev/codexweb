@@ -75,6 +75,44 @@ npm run dev
 | POST | `/api/tasks/:id/messages` | 追加メッセージ (アイドル時のみ) |
 | POST | `/api/tasks/:id/stop` | 実行中のタスクを停止 |
 
+## デプロイ
+
+### コンテナ (推奨)
+
+`main` への push で GitHub Actions が `ghcr.io/<owner>/codexweb` にイメージを
+build & push します (`.github/workflows/docker.yml`)。タグ: `latest`、ブランチ名、
+コミット SHA、`v*` の git tag。
+
+```bash
+docker run --rm -p 3000:3000 \
+  -e OPENAI_API_KEY=sk-... \
+  -v /path/to/your/projects:/workspace \
+  -e CODEX_DEFAULT_CWD=/workspace \
+  ghcr.io/<owner>/codexweb:latest
+```
+
+イメージには `@openai/codex` を `npm i -g` で同梱しています。別バイナリを使い
+たい場合はマウントして `CODEX_BIN` を上書きしてください。
+
+ビルド時に codex CLI の同梱を抑止する:
+
+```bash
+docker build --build-arg INSTALL_CODEX=false -t codexweb .
+```
+
+### Vercel
+
+1. Vercel ダッシュボードで GitHub リポジトリを連携 (`Add New > Project`)
+2. Framework Preset は自動検出される `Next.js` のままで OK
+3. Environment Variables に `OPENAI_API_KEY` を設定
+4. `main` への push で自動デプロイ
+
+**⚠️ 制限**: Vercel の serverless runtime ではこのアプリの中核機能は動きません。
+`codex` バイナリが存在しないこと、SSE が関数タイムアウト (Hobby 60秒 / Pro 300秒)
+で切れること、メモリ内タスク state が関数インスタンス間で共有されないことが
+主な理由です。**UI とビルドの動作確認用** と割り切ってください。
+実利用にはコンテナデプロイを推奨します。
+
 ## 既知の制約 (MVP)
 
 - タスクの永続化は **メモリのみ**。プロセス再起動で消えます。
