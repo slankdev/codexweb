@@ -92,7 +92,10 @@ export class CodexRunner {
   start(): void {
     const requested = resolveCodexBin({ bin: this.opts.bin });
     const { command, prefixArgs } = buildSpawnCommand(requested);
-    const args = [...prefixArgs, "exec", "--json"];
+    // `--skip-git-repo-check`: the user explicitly chose the cwd from the
+    //   web UI, so we treat the parent webapp as the trust boundary rather
+    //   than relying on codex's "must be a git repo" guard.
+    const args = [...prefixArgs, "exec", "--json", "--skip-git-repo-check"];
     if (this.opts.model) args.push("--model", this.opts.model);
     if (this.opts.extraArgs?.length) args.push(...this.opts.extraArgs);
     // Prompt is passed via stdin to avoid argv length / quoting issues.
