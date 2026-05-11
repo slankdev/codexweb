@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { delimiter, join, resolve } from "node:path";
 import type { TaskEvent } from "./types";
 
 export interface CodexRunnerOptions {
@@ -33,6 +33,49 @@ export function resolveCodexBin(opts: { bin?: string } = {}): string {
 }
 
 /**
+ * Find a bare command on PATH (poor man's `which`). Returns null if missing.
+ */
+function whichOnPath(name: string): string | null {
+  if (name.includes("/")) return existsSync(name) ? name : null;
+  const PATH = process.env.PATH ?? "";
+  const exts =
+    process.platform === "win32"
+      ? (process.env.PATHEXT ?? ".EXE").split(";")
+      : [""];
+  for (const dir of PATH.split(delimiter)) {
+    if (!dir) continue;
+    for (const ext of exts) {
+      const p = join(dir, name + ext);
+      if (existsSync(p)) return p;
+    }
+  }
+  return null;
+}
+
+/**
+ * Decide how to launch the codex binary. If the resolved path is a Node
+ * script (e.g. an `npm i -g @openai/codex` symlink that points to a `.js`
+ * file lacking the +x bit), invoke it via `node` so we don't depend on
+ * the file's executable permission.
+ */
+export function buildSpawnCommand(requested: string): {
+  command: string;
+  prefixArgs: string[];
+} {
+  const resolved = whichOnPath(requested) ?? requested;
+  let real = resolved;
+  try {
+    real = realpathSync(resolved);
+  } catch {
+    // not a real path yet (bare name not on PATH) — let spawn fail naturally
+  }
+  if (/\.(c?js|mjs)$/i.test(real)) {
+    return { command: process.execPath, prefixArgs: [real] };
+  }
+  return { command: requested, prefixArgs: [] };
+}
+
+/**
  * Run `codex exec` for the given prompt and stream events.
  *
  * Codex CLI's exec mode prints structured events when invoked with `--json`.
@@ -47,8 +90,9 @@ export class CodexRunner {
   constructor(private readonly opts: CodexRunnerOptions) {}
 
   start(): void {
-    const bin = resolveCodexBin({ bin: this.opts.bin });
-    const args = ["exec", "--json"];
+    const requested = resolveCodexBin({ bin: this.opts.bin });
+    const { command, prefixArgs } = buildSpawnCommand(requested);
+    const args = [...prefixArgs, "exec", "--json"];
     if (this.opts.model) args.push("--model", this.opts.model);
     if (this.opts.extraArgs?.length) args.push(...this.opts.extraArgs);
     // Prompt is passed via stdin to avoid argv length / quoting issues.
@@ -56,7 +100,7 @@ export class CodexRunner {
 
     let proc: ChildProcessWithoutNullStreams;
     try {
-      proc = spawn(bin, args, {
+      proc = spawn(command, args, {
         cwd: this.opts.cwd,
         env: { ...process.env },
         stdio: ["pipe", "pipe", "pipe"],
@@ -66,7 +110,7 @@ export class CodexRunner {
         kind: "error",
         id: randomUUID(),
         ts: Date.now(),
-        message: `Failed to spawn codex (${bin}): ${(err as Error).message}`,
+        message: `Failed to spawn codex (${command}): ${(err as Error).message}`,
       });
       this.emit({ kind: "status", id: randomUUID(), ts: Date.now(), status: "failed" });
       return;
@@ -83,12 +127,12 @@ export class CodexRunner {
     });
 
     proc.on("error", (err: NodeJS.ErrnoException) => {
-      const hint = hintForSpawnError(err, bin);
+      const hint = hintForSpawnError(err, command);
       this.emit({
         kind: "error",
         id: randomUUID(),
         ts: Date.now(),
-        message: `Codex process error (${bin}): ${err.message}${hint ? `\n${hint}` : ""}`,
+        message: `Codex process error (${command}): ${err.message}${hint ? `\n${hint}` : ""}`,
       });
     });
 
