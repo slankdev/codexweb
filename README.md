@@ -113,6 +113,59 @@ docker build --build-arg INSTALL_CODEX=false -t codexweb .
 主な理由です。**UI とビルドの動作確認用** と割り切ってください。
 実利用にはコンテナデプロイを推奨します。
 
+## トラブルシュート
+
+### `Codex process error: spawn codex EACCES`
+
+`codex` バイナリは見つかったが、コンテナ内のユーザー (`nextjs`) に実行権限が
+ない、もしくはホスト CPU と実行ファイルのアーキ不一致が原因です。
+
+切り分け:
+
+```bash
+# コンテナ内で codex の実体と権限を確認
+docker run --rm --entrypoint sh ghcr.io/<owner>/codexweb:latest -c '
+  set -x;
+  command -v codex;
+  ls -la "$(command -v codex)";
+  readlink -f "$(command -v codex)";
+  ls -la "$(readlink -f "$(command -v codex)")";
+'
+```
+
+対処:
+
+1. **Apple Silicon (M1/M2/M3) の Mac で動かしている場合**
+   現在ビルドは `linux/amd64` と `linux/arm64` のマルチアーキ。古いタグを使って
+   いると amd64 only の可能性があるので最新を pull:
+   ```bash
+   docker pull ghcr.io/<owner>/codexweb:latest
+   ```
+   それでも駄目なら明示的に:
+   ```bash
+   docker run --platform linux/arm64 ...
+   ```
+
+2. **手元の codex バイナリをマウントして使う**
+   ```bash
+   docker run --rm -p 3000:3000 \
+     -e OPENAI_API_KEY=sk-... \
+     -e CODEX_BIN=/opt/codex/codex \
+     -v /usr/local/bin/codex:/opt/codex/codex:ro \
+     ghcr.io/<owner>/codexweb:latest
+   ```
+
+3. **イメージ内 codex の同梱をやめて自前で用意**
+   ```bash
+   docker build --build-arg INSTALL_CODEX=false -t codexweb .
+   # 起動時に CODEX_BIN を指定
+   ```
+
+### `spawn codex ENOENT`
+
+PATH に `codex` がない。`CODEX_BIN` に絶対パスを指定するか、`npm i -g @openai/codex`
+等でインストールしてください。
+
 ## 既知の制約 (MVP)
 
 - タスクの永続化は **メモリのみ**。プロセス再起動で消えます。

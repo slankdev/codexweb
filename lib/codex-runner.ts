@@ -66,7 +66,7 @@ export class CodexRunner {
         kind: "error",
         id: randomUUID(),
         ts: Date.now(),
-        message: `Failed to spawn codex: ${(err as Error).message}`,
+        message: `Failed to spawn codex (${bin}): ${(err as Error).message}`,
       });
       this.emit({ kind: "status", id: randomUUID(), ts: Date.now(), status: "failed" });
       return;
@@ -82,12 +82,13 @@ export class CodexRunner {
       this.emit({ kind: "stderr", id: randomUUID(), ts: Date.now(), content: chunk });
     });
 
-    proc.on("error", (err) => {
+    proc.on("error", (err: NodeJS.ErrnoException) => {
+      const hint = hintForSpawnError(err, bin);
       this.emit({
         kind: "error",
         id: randomUUID(),
         ts: Date.now(),
-        message: `Codex process error: ${err.message}`,
+        message: `Codex process error (${bin}): ${err.message}${hint ? `\n${hint}` : ""}`,
       });
     });
 
@@ -163,6 +164,19 @@ export class CodexRunner {
     } catch {
       // never let listener errors crash the runner
     }
+  }
+}
+
+function hintForSpawnError(err: NodeJS.ErrnoException, bin: string): string | null {
+  switch (err.code) {
+    case "ENOENT":
+      return `Hint: "${bin}" was not found on PATH. Install the codex CLI (e.g. \`npm i -g @openai/codex\`) or set CODEX_BIN to its absolute path.`;
+    case "EACCES":
+      return `Hint: "${bin}" was found but is not executable for the running user. Run \`chmod +x ${bin}\` (and its symlink target), or — on Apple Silicon — make sure the image arch matches the host (try \`--platform linux/amd64\` or build a linux/arm64 image).`;
+    case "ENOEXEC":
+      return `Hint: "${bin}" is not in an executable format for this CPU architecture.`;
+    default:
+      return null;
   }
 }
 
