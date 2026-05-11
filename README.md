@@ -85,14 +85,21 @@ build & push します (`.github/workflows/docker.yml`)。タグ: `latest`、ブ
 
 ```bash
 docker run --rm -p 3000:3000 \
-  -e OPENAI_API_KEY=sk-... \
-  -v /path/to/your/projects:/workspace \
+  --env-file .env \
+  -v "$PWD":/workspace \
   -e CODEX_DEFAULT_CWD=/workspace \
   ghcr.io/<owner>/codexweb:latest
 ```
 
+`.env` には少なくとも `OPENAI_API_KEY=sk-...` を入れておきます。`.env` から
+読みたくない場合は `-e OPENAI_API_KEY=...` を直接渡しても OK。
+
 イメージには `@openai/codex` を `npm i -g` で同梱しています。別バイナリを使い
 たい場合はマウントして `CODEX_BIN` を上書きしてください。
+
+コンテナは **root で起動するのが既定** です — bind mount したホストディレクトリ
+を traverse するため。非 root で動かしたい場合は `--user <uid>` を付け、ホスト
+側ディレクトリの権限がその UID で参照可能なことを確認してください。
 
 ビルド時に codex CLI の同梱を抑止する:
 
@@ -112,6 +119,72 @@ docker build --build-arg INSTALL_CODEX=false -t codexweb .
 で切れること、メモリ内タスク state が関数インスタンス間で共有されないことが
 主な理由です。**UI とビルドの動作確認用** と割り切ってください。
 実利用にはコンテナデプロイを推奨します。
+
+## トラブルシュート
+
+### `Codex process error: spawn codex EACCES`
+
+`spawn <bin> EACCES` は Node が **`spawn` 失敗の汎用報告フォーマット** なので、
+ファイル自体ではなく `cwd` への chdir 失敗でも同じメッセージが出ます。最も
+よくある原因は **bind-mount したホストディレクトリにコンテナ内ユーザーが
+traverse できない** ケース。
+
+```bash
+# 直る組み合わせ (rootless Podman / Docker)
+docker run --rm -p 3000:3000 --user 0 \
+  --env-file .env \
+  -v "$PWD":/workspace -e CODEX_DEFAULT_CWD=/workspace \
+  ghcr.io/<owner>/codexweb:latest
+```
+
+最新イメージは既定で root 起動なので `--user 0` は不要 (古いタグを使って
+いる場合のみ必要)。
+
+切り分け:
+
+```bash
+# コンテナ内で codex の実体と権限を確認
+docker run --rm --entrypoint sh ghcr.io/<owner>/codexweb:latest -c '
+  set -x;
+  command -v codex;
+  ls -la "$(command -v codex)";
+  readlink -f "$(command -v codex)";
+  ls -la "$(readlink -f "$(command -v codex)")";
+'
+```
+
+対処:
+
+1. **Apple Silicon (M1/M2/M3) の Mac で動かしている場合**
+   現在ビルドは `linux/amd64` と `linux/arm64` のマルチアーキ。古いタグを使って
+   いると amd64 only の可能性があるので最新を pull:
+   ```bash
+   docker pull ghcr.io/<owner>/codexweb:latest
+   ```
+   それでも駄目なら明示的に:
+   ```bash
+   docker run --platform linux/arm64 ...
+   ```
+
+2. **手元の codex バイナリをマウントして使う**
+   ```bash
+   docker run --rm -p 3000:3000 \
+     -e OPENAI_API_KEY=sk-... \
+     -e CODEX_BIN=/opt/codex/codex \
+     -v /usr/local/bin/codex:/opt/codex/codex:ro \
+     ghcr.io/<owner>/codexweb:latest
+   ```
+
+3. **イメージ内 codex の同梱をやめて自前で用意**
+   ```bash
+   docker build --build-arg INSTALL_CODEX=false -t codexweb .
+   # 起動時に CODEX_BIN を指定
+   ```
+
+### `spawn codex ENOENT`
+
+PATH に `codex` がない。`CODEX_BIN` に絶対パスを指定するか、`npm i -g @openai/codex`
+等でインストールしてください。
 
 ## 既知の制約 (MVP)
 

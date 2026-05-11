@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { accessSync, constants, existsSync, realpathSync, statSync } from "node:fs";
+import { delimiter, join, resolve } from "node:path";
 import type { TaskEvent } from "./types";
 
 export interface CodexRunnerOptions {
@@ -33,6 +33,49 @@ export function resolveCodexBin(opts: { bin?: string } = {}): string {
 }
 
 /**
+ * Find a bare command on PATH (poor man's `which`). Returns null if missing.
+ */
+function whichOnPath(name: string): string | null {
+  if (name.includes("/")) return existsSync(name) ? name : null;
+  const PATH = process.env.PATH ?? "";
+  const exts =
+    process.platform === "win32"
+      ? (process.env.PATHEXT ?? ".EXE").split(";")
+      : [""];
+  for (const dir of PATH.split(delimiter)) {
+    if (!dir) continue;
+    for (const ext of exts) {
+      const p = join(dir, name + ext);
+      if (existsSync(p)) return p;
+    }
+  }
+  return null;
+}
+
+/**
+ * Decide how to launch the codex binary. If the resolved path is a Node
+ * script (e.g. an `npm i -g @openai/codex` symlink that points to a `.js`
+ * file lacking the +x bit), invoke it via `node` so we don't depend on
+ * the file's executable permission.
+ */
+export function buildSpawnCommand(requested: string): {
+  command: string;
+  prefixArgs: string[];
+} {
+  const resolved = whichOnPath(requested) ?? requested;
+  let real = resolved;
+  try {
+    real = realpathSync(resolved);
+  } catch {
+    // not a real path yet (bare name not on PATH) — let spawn fail naturally
+  }
+  if (/\.(c?js|mjs)$/i.test(real)) {
+    return { command: process.execPath, prefixArgs: [real] };
+  }
+  return { command: requested, prefixArgs: [] };
+}
+
+/**
  * Run `codex exec` for the given prompt and stream events.
  *
  * Codex CLI's exec mode prints structured events when invoked with `--json`.
@@ -47,16 +90,27 @@ export class CodexRunner {
   constructor(private readonly opts: CodexRunnerOptions) {}
 
   start(): void {
-    const bin = resolveCodexBin({ bin: this.opts.bin });
-    const args = ["exec", "--json"];
+    const requested = resolveCodexBin({ bin: this.opts.bin });
+    const { command, prefixArgs } = buildSpawnCommand(requested);
+    // `--skip-git-repo-check`: the user explicitly chose the cwd from the
+    //   web UI, so we treat the parent webapp as the trust boundary rather
+    //   than relying on codex's "must be a git repo" guard.
+    const args = [...prefixArgs, "exec", "--json", "--skip-git-repo-check"];
     if (this.opts.model) args.push("--model", this.opts.model);
     if (this.opts.extraArgs?.length) args.push(...this.opts.extraArgs);
     // Prompt is passed via stdin to avoid argv length / quoting issues.
     args.push("-");
 
+    const cwdError = checkCwd(this.opts.cwd);
+    if (cwdError) {
+      this.emit({ kind: "error", id: randomUUID(), ts: Date.now(), message: cwdError });
+      this.emit({ kind: "status", id: randomUUID(), ts: Date.now(), status: "failed" });
+      return;
+    }
+
     let proc: ChildProcessWithoutNullStreams;
     try {
-      proc = spawn(bin, args, {
+      proc = spawn(command, args, {
         cwd: this.opts.cwd,
         env: { ...process.env },
         stdio: ["pipe", "pipe", "pipe"],
@@ -66,7 +120,7 @@ export class CodexRunner {
         kind: "error",
         id: randomUUID(),
         ts: Date.now(),
-        message: `Failed to spawn codex: ${(err as Error).message}`,
+        message: `Failed to spawn codex (${command}): ${(err as Error).message}`,
       });
       this.emit({ kind: "status", id: randomUUID(), ts: Date.now(), status: "failed" });
       return;
@@ -82,12 +136,13 @@ export class CodexRunner {
       this.emit({ kind: "stderr", id: randomUUID(), ts: Date.now(), content: chunk });
     });
 
-    proc.on("error", (err) => {
+    proc.on("error", (err: NodeJS.ErrnoException) => {
+      const hint = hintForSpawnError(err, command);
       this.emit({
         kind: "error",
         id: randomUUID(),
         ts: Date.now(),
-        message: `Codex process error: ${err.message}`,
+        message: `Codex process error (${command}): ${err.message}${hint ? `\n${hint}` : ""}`,
       });
     });
 
@@ -164,6 +219,50 @@ export class CodexRunner {
       // never let listener errors crash the runner
     }
   }
+}
+
+function hintForSpawnError(err: NodeJS.ErrnoException, bin: string): string | null {
+  switch (err.code) {
+    case "ENOENT":
+      return `Hint: "${bin}" was not found on PATH. Install the codex CLI (e.g. \`npm i -g @openai/codex\`) or set CODEX_BIN to its absolute path.`;
+    case "EACCES":
+      return `Hint: "${bin}" or the task's cwd is not accessible for the running user. If you're running the container with -v <host>:<path>, make sure the host directory is traversable for the container's UID, or pass \`--user 0\` (rootless Docker/Podman maps the host user to container root).`;
+    case "ENOEXEC":
+      return `Hint: "${bin}" is not in an executable format for this CPU architecture.`;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Validate that the task's working directory exists and is searchable for
+ * the current process. Otherwise `spawn` will fail at chdir-time and Node
+ * reports it as `spawn <bin> EACCES/ENOENT`, which is misleading.
+ */
+function checkCwd(cwd: string): string | null {
+  if (!cwd) return "Working directory is empty.";
+  let st;
+  try {
+    st = statSync(cwd);
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err.code === "ENOENT") {
+      return `Working directory "${cwd}" does not exist (in the codexweb server's view — if running in a container, was it bind-mounted?).`;
+    }
+    if (err.code === "EACCES") {
+      return `Working directory "${cwd}" is not accessible to the codexweb server process. If running in a container, check that the bind-mount permissions allow the container UID, or run with \`--user 0\`.`;
+    }
+    return `Cannot stat working directory "${cwd}": ${err.message}`;
+  }
+  if (!st.isDirectory()) {
+    return `Working directory "${cwd}" exists but is not a directory.`;
+  }
+  try {
+    accessSync(cwd, constants.R_OK | constants.X_OK);
+  } catch {
+    return `Working directory "${cwd}" exists but is not readable/traversable by the codexweb server process. If running in a container with a bind mount, ensure the mount permits the container UID (try \`--user 0\`).`;
+  }
+  return null;
 }
 
 function tryParseJson(line: string): Record<string, unknown> | null {
