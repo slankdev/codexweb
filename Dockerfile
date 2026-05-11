@@ -29,41 +29,27 @@ ENV HOSTNAME=0.0.0.0
 # clean signal handling so SIGTERM stops codex children.
 RUN apk add --no-cache libc6-compat git tini
 
-RUN addgroup --system --gid 1001 nodejs \
-  && adduser --system --uid 1001 --home /home/nextjs --shell /bin/sh nextjs \
-  && mkdir -p /home/nextjs/.codex \
-  && chown -R nextjs:nodejs /home/nextjs
-
-# Optionally pre-install the codex CLI globally so spawning `codex` works
-# out of the box. We aggressively normalise execute bits because npm
-# packages sometimes ship binaries that aren't world-executable, which
-# would trip up the non-root `nextjs` user with EACCES.
+# Pre-install the codex CLI globally so spawning `codex` works out of the
+# box. Override at runtime by setting CODEX_BIN, or skip the install with
+# `--build-arg INSTALL_CODEX=false`.
 ARG INSTALL_CODEX=true
 RUN if [ "$INSTALL_CODEX" = "true" ]; then \
-      set -eu; \
-      if npm install -g @openai/codex 2>&1; then \
-        if command -v codex >/dev/null 2>&1; then \
-          CODEX_PATH="$(command -v codex)"; \
-          REAL="$(readlink -f "$CODEX_PATH")"; \
-          chmod -R a+rX /usr/local/lib/node_modules 2>/dev/null || true; \
-          chmod a+rx "$CODEX_PATH" 2>/dev/null || true; \
-          [ -n "$REAL" ] && chmod a+rx "$REAL" 2>/dev/null || true; \
-          echo "[setup] codex installed at $CODEX_PATH -> $REAL"; \
-        else \
-          echo "[warn] codex command not on PATH after install"; \
-        fi; \
-      else \
-        echo "[warn] @openai/codex not installed; set CODEX_BIN at runtime"; \
-      fi; \
+      npm install -g @openai/codex \
+      || echo "[warn] @openai/codex not installed; set CODEX_BIN at runtime"; \
     fi
 
 # Next.js standalone output bundles only the necessary runtime files.
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
 
-USER nextjs
-ENV HOME=/home/nextjs
+# Default to running as root. This image is meant to be self-hosted as a
+# dev tool with bind-mounted project directories — running as root makes
+# host bind mounts "just work" under both Docker and rootless Podman
+# (where the host user maps to container UID 0). Override with `--user`
+# if you need a different UID, but make sure the bind mount is readable
+# for that UID.
+ENV HOME=/root
 EXPOSE 3000
 
 ENTRYPOINT ["/sbin/tini", "--"]

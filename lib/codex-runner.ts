@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, realpathSync } from "node:fs";
+import { accessSync, constants, existsSync, realpathSync, statSync } from "node:fs";
 import { delimiter, join, resolve } from "node:path";
 import type { TaskEvent } from "./types";
 
@@ -97,6 +97,13 @@ export class CodexRunner {
     if (this.opts.extraArgs?.length) args.push(...this.opts.extraArgs);
     // Prompt is passed via stdin to avoid argv length / quoting issues.
     args.push("-");
+
+    const cwdError = checkCwd(this.opts.cwd);
+    if (cwdError) {
+      this.emit({ kind: "error", id: randomUUID(), ts: Date.now(), message: cwdError });
+      this.emit({ kind: "status", id: randomUUID(), ts: Date.now(), status: "failed" });
+      return;
+    }
 
     let proc: ChildProcessWithoutNullStreams;
     try {
@@ -216,12 +223,43 @@ function hintForSpawnError(err: NodeJS.ErrnoException, bin: string): string | nu
     case "ENOENT":
       return `Hint: "${bin}" was not found on PATH. Install the codex CLI (e.g. \`npm i -g @openai/codex\`) or set CODEX_BIN to its absolute path.`;
     case "EACCES":
-      return `Hint: "${bin}" was found but is not executable for the running user. Run \`chmod +x ${bin}\` (and its symlink target), or — on Apple Silicon — make sure the image arch matches the host (try \`--platform linux/amd64\` or build a linux/arm64 image).`;
+      return `Hint: "${bin}" or the task's cwd is not accessible for the running user. If you're running the container with -v <host>:<path>, make sure the host directory is traversable for the container's UID, or pass \`--user 0\` (rootless Docker/Podman maps the host user to container root).`;
     case "ENOEXEC":
       return `Hint: "${bin}" is not in an executable format for this CPU architecture.`;
     default:
       return null;
   }
+}
+
+/**
+ * Validate that the task's working directory exists and is searchable for
+ * the current process. Otherwise `spawn` will fail at chdir-time and Node
+ * reports it as `spawn <bin> EACCES/ENOENT`, which is misleading.
+ */
+function checkCwd(cwd: string): string | null {
+  if (!cwd) return "Working directory is empty.";
+  let st;
+  try {
+    st = statSync(cwd);
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    if (err.code === "ENOENT") {
+      return `Working directory "${cwd}" does not exist (in the codexweb server's view — if running in a container, was it bind-mounted?).`;
+    }
+    if (err.code === "EACCES") {
+      return `Working directory "${cwd}" is not accessible to the codexweb server process. If running in a container, check that the bind-mount permissions allow the container UID, or run with \`--user 0\`.`;
+    }
+    return `Cannot stat working directory "${cwd}": ${err.message}`;
+  }
+  if (!st.isDirectory()) {
+    return `Working directory "${cwd}" exists but is not a directory.`;
+  }
+  try {
+    accessSync(cwd, constants.R_OK | constants.X_OK);
+  } catch {
+    return `Working directory "${cwd}" exists but is not readable/traversable by the codexweb server process. If running in a container with a bind mount, ensure the mount permits the container UID (try \`--user 0\`).`;
+  }
+  return null;
 }
 
 function tryParseJson(line: string): Record<string, unknown> | null {

@@ -85,14 +85,21 @@ build & push します (`.github/workflows/docker.yml`)。タグ: `latest`、ブ
 
 ```bash
 docker run --rm -p 3000:3000 \
-  -e OPENAI_API_KEY=sk-... \
-  -v /path/to/your/projects:/workspace \
+  --env-file .env \
+  -v "$PWD":/workspace \
   -e CODEX_DEFAULT_CWD=/workspace \
   ghcr.io/<owner>/codexweb:latest
 ```
 
+`.env` には少なくとも `OPENAI_API_KEY=sk-...` を入れておきます。`.env` から
+読みたくない場合は `-e OPENAI_API_KEY=...` を直接渡しても OK。
+
 イメージには `@openai/codex` を `npm i -g` で同梱しています。別バイナリを使い
 たい場合はマウントして `CODEX_BIN` を上書きしてください。
+
+コンテナは **root で起動するのが既定** です — bind mount したホストディレクトリ
+を traverse するため。非 root で動かしたい場合は `--user <uid>` を付け、ホスト
+側ディレクトリの権限がその UID で参照可能なことを確認してください。
 
 ビルド時に codex CLI の同梱を抑止する:
 
@@ -117,8 +124,21 @@ docker build --build-arg INSTALL_CODEX=false -t codexweb .
 
 ### `Codex process error: spawn codex EACCES`
 
-`codex` バイナリは見つかったが、コンテナ内のユーザー (`nextjs`) に実行権限が
-ない、もしくはホスト CPU と実行ファイルのアーキ不一致が原因です。
+`spawn <bin> EACCES` は Node が **`spawn` 失敗の汎用報告フォーマット** なので、
+ファイル自体ではなく `cwd` への chdir 失敗でも同じメッセージが出ます。最も
+よくある原因は **bind-mount したホストディレクトリにコンテナ内ユーザーが
+traverse できない** ケース。
+
+```bash
+# 直る組み合わせ (rootless Podman / Docker)
+docker run --rm -p 3000:3000 --user 0 \
+  --env-file .env \
+  -v "$PWD":/workspace -e CODEX_DEFAULT_CWD=/workspace \
+  ghcr.io/<owner>/codexweb:latest
+```
+
+最新イメージは既定で root 起動なので `--user 0` は不要 (古いタグを使って
+いる場合のみ必要)。
 
 切り分け:
 
