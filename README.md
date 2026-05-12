@@ -135,28 +135,24 @@ OAUTH_USERINFO_URL=https://kc.example.com/realms/main/protocol/openid-connect/us
 
 ## デプロイ
 
-### コンテナ (推奨)
+### ローカル Docker (任意)
 
-`main` への push で GitHub Actions が `ghcr.io/<owner>/codexweb` にイメージを
-build & push します (`.github/workflows/docker.yml`)。タグ: `latest`、ブランチ名、
-コミット SHA、`v*` の git tag。
-
-**1. `.env` を用意**:
-
-```env
-OPENAI_API_KEY=sk-...
-# 任意:
-# CODEX_EXTRA_ARGS=
-```
-
-**2. 起動**:
+公式のレジストリ push は行っていないので、ローカルで動作確認したい場合は
+リポジトリ直下でイメージをビルドしてから起動してください。
 
 ```bash
+docker build -t codexweb:local .
+
+cat > .env <<'EOF'
+OPENAI_API_KEY=sk-...
+# 任意: CODEX_EXTRA_ARGS=
+EOF
+
 docker run --rm -p 3000:3000 \
   --env-file .env \
   -v "$PWD":/workspace \
   -e CODEX_DEFAULT_CWD=/workspace \
-  ghcr.io/<owner>/codexweb:latest
+  codexweb:local
 ```
 
 → ブラウザで http://localhost:3000
@@ -266,7 +262,7 @@ traverse できない** ケース。
 docker run --rm -p 3000:3000 --user 0 \
   --env-file .env \
   -v "$PWD":/workspace -e CODEX_DEFAULT_CWD=/workspace \
-  ghcr.io/<owner>/codexweb:latest
+  codexweb:local
 ```
 
 最新イメージは既定で root 起動なので `--user 0` は不要 (古いタグを使って
@@ -276,7 +272,7 @@ docker run --rm -p 3000:3000 --user 0 \
 
 ```bash
 # コンテナ内で codex の実体と権限を確認
-docker run --rm --entrypoint sh ghcr.io/<owner>/codexweb:latest -c '
+docker run --rm --entrypoint sh codexweb:local -c '
   set -x;
   command -v codex;
   ls -la "$(command -v codex)";
@@ -288,13 +284,11 @@ docker run --rm --entrypoint sh ghcr.io/<owner>/codexweb:latest -c '
 対処:
 
 1. **Apple Silicon (M1/M2/M3) の Mac で動かしている場合**
-   現在ビルドは `linux/amd64` と `linux/arm64` のマルチアーキ。古いタグを使って
-   いると amd64 only の可能性があるので最新を pull:
+   ローカルビルドはホストのアーキを使うので通常そのままで動きます。
+   どうしてもアーキを切り替えたいときは:
    ```bash
-   docker pull ghcr.io/<owner>/codexweb:latest
-   ```
-   それでも駄目なら明示的に:
-   ```bash
+   docker buildx build --platform linux/arm64 -t codexweb:local --load .
+   # or
    docker run --platform linux/arm64 ...
    ```
 
@@ -304,7 +298,7 @@ docker run --rm --entrypoint sh ghcr.io/<owner>/codexweb:latest -c '
      -e OPENAI_API_KEY=sk-... \
      -e CODEX_BIN=/opt/codex/codex \
      -v /usr/local/bin/codex:/opt/codex/codex:ro \
-     ghcr.io/<owner>/codexweb:latest
+     codexweb:local
    ```
 
 3. **イメージ内 codex の同梱をやめて自前で用意**
