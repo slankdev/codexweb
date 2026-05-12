@@ -97,6 +97,12 @@ export class CodexRunner {
     //   than relying on codex's "must be a git repo" guard.
     const args = [...prefixArgs, "exec", "--json", "--skip-git-repo-check"];
     if (this.opts.model) args.push("--model", this.opts.model);
+    // CODEX_EXTRA_ARGS lets the operator inject arbitrary flags without
+    // a rebuild — e.g. `-c responses.transport=http` or
+    // `--disable some_feature`. Parsed with naive shell-quoting; good
+    // enough for the dev-tool deployment surface.
+    const extraEnvArgs = parseEnvArgs(process.env.CODEX_EXTRA_ARGS);
+    if (extraEnvArgs.length) args.push(...extraEnvArgs);
     if (this.opts.extraArgs?.length) args.push(...this.opts.extraArgs);
     // Prompt is passed via stdin to avoid argv length / quoting issues.
     args.push("-");
@@ -219,6 +225,39 @@ export class CodexRunner {
       // never let listener errors crash the runner
     }
   }
+}
+
+/**
+ * Split a shell-ish args string honouring single/double quotes. Good enough
+ * for `CODEX_EXTRA_ARGS=-c key="some value" --disable foo` style inputs.
+ */
+function parseEnvArgs(raw: string | undefined): string[] {
+  if (!raw) return [];
+  const out: string[] = [];
+  let cur = "";
+  let quote: '"' | "'" | null = null;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      else cur += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (cur.length > 0) {
+        out.push(cur);
+        cur = "";
+      }
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur.length > 0) out.push(cur);
+  return out;
 }
 
 function hintForSpawnError(err: NodeJS.ErrnoException, bin: string): string | null {
