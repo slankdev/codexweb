@@ -83,6 +83,16 @@ npm run dev
 build & push します (`.github/workflows/docker.yml`)。タグ: `latest`、ブランチ名、
 コミット SHA、`v*` の git tag。
 
+**1. `.env` を用意**:
+
+```env
+OPENAI_API_KEY=sk-...
+# 任意:
+# CODEX_EXTRA_ARGS=
+```
+
+**2. 起動**:
+
 ```bash
 docker run --rm -p 3000:3000 \
   --env-file .env \
@@ -91,15 +101,40 @@ docker run --rm -p 3000:3000 \
   ghcr.io/<owner>/codexweb:latest
 ```
 
-`.env` には少なくとも `OPENAI_API_KEY=sk-...` を入れておきます。`.env` から
-読みたくない場合は `-e OPENAI_API_KEY=...` を直接渡しても OK。
+→ ブラウザで http://localhost:3000
 
-イメージには `@openai/codex` を `npm i -g` で同梱しています。別バイナリを使い
-たい場合はマウントして `CODEX_BIN` を上書きしてください。
+### 起動時に何が走るか
 
-コンテナは **root で起動するのが既定** です — bind mount したホストディレクトリ
-を traverse するため。非 root で動かしたい場合は `--user <uid>` を付け、ホスト
-側ディレクトリの権限がその UID で参照可能なことを確認してください。
+エントリーポイント (`scripts/docker-entrypoint.sh`) が:
+
+1. `OPENAI_API_KEY` が設定されていて `~/.codex/auth.json` が無ければ、
+   `codex login --with-api-key` を自動実行 (key を auth.json に焼き込む)
+2. `node server.js` を exec
+
+Codex CLI の Responses WebSocket endpoint は `OPENAI_API_KEY` 環境変数だけ
+だと認証通らないので、起動時に `auth.json` を作っておく必要があります。
+
+### 既に host で `codex login` 済みの場合
+
+`~/.codex` をそのまま bind-mount すれば、コンテナ内 login をスキップして
+ホストの auth/履歴/memories をそのまま使えます:
+
+```bash
+docker run --rm -p 3000:3000 \
+  --env-file .env \
+  -v "$HOME/.codex":/root/.codex \
+  -v "$PWD":/workspace \
+  -e CODEX_DEFAULT_CWD=/workspace \
+  ghcr.io/<owner>/codexweb:latest
+```
+
+### その他
+
+- イメージには `@openai/codex` を `npm i -g` で同梱。別バイナリを使いたければ
+  マウントして `CODEX_BIN` を上書き
+- コンテナは **root で起動するのが既定** (bind mount を traverse するため)。
+  非 root で動かしたい場合は `--user <uid>` を付け、ホスト側ディレクトリの
+  権限がその UID で参照可能なことを確認
 
 ビルド時に codex CLI の同梱を抑止する:
 
@@ -183,29 +218,23 @@ docker run --rm --entrypoint sh ghcr.io/<owner>/codexweb:latest -c '
 
 ### `codex_api::endpoint::responses_websocket: ... 401 Unauthorized`
 
-Codex CLI が `wss://api.openai.com/v1/responses` への接続で 401 を返す場合、
-キーが無効ということもありますが、`/v1/models` が 200 を返すなら **WebSocket
-endpoint だけが認証通らない** ケースもあります。Codex CLI のフラグで HTTP
-streaming 等に切替えられる可能性があります。
+Codex CLI が `wss://api.openai.com/v1/responses` への接続で 401 を返すのは、
+`OPENAI_API_KEY` 環境変数だけだと WebSocket 側の認証経路が成立しないため。
+`codex login --with-api-key` で `~/.codex/auth.json` に key を焼き込んでおけば
+通ります。
 
-利用可能な feature flag を確認:
-
-```bash
-docker exec tmp codex features 2>&1
-```
-
-該当のフラグが見つかったら、`.env` に `CODEX_EXTRA_ARGS` で渡せます (再ビルド
-不要):
+最新イメージは entrypoint がこれを自動で行うので、`OPENAI_API_KEY` を
+`.env` 経由で渡せば追加操作は不要です。手動でやる場合:
 
 ```bash
-# 例
-CODEX_EXTRA_ARGS=--disable responses_websocket
-# or
-CODEX_EXTRA_ARGS=-c responses.transport=http
+docker exec -it <container> sh -c '
+  printf "%s\n" "$OPENAI_API_KEY" | codex login --with-api-key
+'
 ```
 
-設定後、コンテナを `--env-file .env` で再起動すれば全 `codex exec` に自動で
-付与されます。
+それでも 401 が続く場合は、key が project-scoped で Responses API への
+アクセスが許可されていない / アカウントの tier が足りない可能性。OpenAI
+ダッシュボードで該当 project の Model permissions を確認してください。
 
 ### `spawn codex ENOENT`
 
