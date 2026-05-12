@@ -1,0 +1,140 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      revision_suffix:
+        description: "Optional revision suffix (default: short sha)"
+        required: false
+        default: ""
+
+# Single-instance app (in-memory task store), so cancel any in-flight deploys
+# when a new commit comes in — we don't want overlapping revisions racing.
+concurrency:
+  group: cloudrun-deploy
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  id-token: write # Required for Workload Identity Federation
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      GCP_REGION: ${{ vars.GCP_REGION }}
+      AR_REPO: ${{ vars.ARTIFACT_REGISTRY_REPO }}
+      SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required variables
+        run: |
+          missing=()
+          for v in GCP_PROJECT_ID GCP_REGION AR_REPO SERVICE; do
+            if [ -z "${!v}" ]; then missing+=("$v"); fi
+          done
+          if [ -z "${{ vars.WIF_PROVIDER }}" ]; then missing+=("WIF_PROVIDER"); fi
+          if [ -z "${{ vars.WIF_SERVICE_ACCOUNT }}" ]; then missing+=("WIF_SERVICE_ACCOUNT"); fi
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "Missing required repo variables: ${missing[*]}" >&2
+            echo "See README.md → Cloud Run デプロイ for setup." >&2
+            exit 1
+          fi
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Compute image tag
+        id: tag
+        run: |
+          sha="${GITHUB_SHA::7}"
+          image="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPO}/${SERVICE}"
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "tag_sha=${image}:${sha}" >> "$GITHUB_OUTPUT"
+          echo "tag_latest=${image}:latest" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.tag.outputs.tag_sha }}
+            ${{ steps.tag.outputs.tag_latest }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy to Cloud Run
+        run: |
+          set -euo pipefail
+
+          # Optional / opt-in env vars. Built dynamically so the workflow
+          # stays usable even before every variable is provisioned. IdP
+          # endpoints (OAUTH_*_URL) only need to be set when switching
+          # away from the Google defaults.
+          env_vars=()
+          [ -n "${{ vars.ALLOWED_EMAILS }}"      ] && env_vars+=("ALLOWED_EMAILS=${{ vars.ALLOWED_EMAILS }}")
+          [ -n "${{ vars.AUTH_BASE_URL }}"       ] && env_vars+=("AUTH_BASE_URL=${{ vars.AUTH_BASE_URL }}")
+          [ -n "${{ vars.OAUTH_AUTHORIZE_URL }}" ] && env_vars+=("OAUTH_AUTHORIZE_URL=${{ vars.OAUTH_AUTHORIZE_URL }}")
+          [ -n "${{ vars.OAUTH_TOKEN_URL }}"     ] && env_vars+=("OAUTH_TOKEN_URL=${{ vars.OAUTH_TOKEN_URL }}")
+          [ -n "${{ vars.OAUTH_USERINFO_URL }}"  ] && env_vars+=("OAUTH_USERINFO_URL=${{ vars.OAUTH_USERINFO_URL }}")
+          [ -n "${{ vars.OAUTH_SCOPES }}"        ] && env_vars+=("OAUTH_SCOPES=${{ vars.OAUTH_SCOPES }}")
+          [ -n "${{ vars.CODEX_DEFAULT_CWD }}"   ] && env_vars+=("CODEX_DEFAULT_CWD=${{ vars.CODEX_DEFAULT_CWD }}")
+          [ -n "${{ vars.CODEX_EXTRA_ARGS }}"    ] && env_vars+=("CODEX_EXTRA_ARGS=${{ vars.CODEX_EXTRA_ARGS }}")
+
+          set_env_flag=()
+          if [ ${#env_vars[@]} -gt 0 ]; then
+            env_joined=$(IFS=','; echo "${env_vars[*]}")
+            set_env_flag=(--set-env-vars "$env_joined")
+          fi
+
+          # Public-client PKCE: no OAUTH_CLIENT_SECRET. Secret names in
+          # Secret Manager must match the env var name on the right.
+          secrets="AUTH_SECRET=AUTH_SECRET:latest"
+          secrets+=",OAUTH_CLIENT_ID=OAUTH_CLIENT_ID:latest"
+          secrets+=",OPENAI_API_KEY=OPENAI_API_KEY:latest"
+
+          gcloud run deploy "$SERVICE" \
+            --image="${{ steps.tag.outputs.tag_sha }}" \
+            --region="$GCP_REGION" \
+            --project="$GCP_PROJECT_ID" \
+            --platform=managed \
+            --allow-unauthenticated \
+            --port=3000 \
+            --cpu=1 \
+            --memory=1Gi \
+            --min-instances=1 \
+            --max-instances=1 \
+            --timeout=3600 \
+            --execution-environment=gen2 \
+            --set-secrets="$secrets" \
+            "${set_env_flag[@]}" \
+            --quiet
+
+      - name: Show service URL
+        run: |
+          url=$(gcloud run services describe "$SERVICE" \
+            --region="$GCP_REGION" --project="$GCP_PROJECT_ID" \
+            --format='value(status.url)')
+          echo "Deployed: $url"
+          echo "::notice title=Cloud Run::Deployed to $url"
