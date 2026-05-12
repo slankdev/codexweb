@@ -29,6 +29,12 @@ export function CodexWeb() {
   const [showNew, setShowNew] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [user, setUser] = useState<CurrentUser | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const selectTask = useCallback((id: string) => {
+    setActiveId(id);
+    setSidebarOpen(false);
+  }, []);
 
   useEffect(() => {
     fetch("/api/auth/me")
@@ -145,24 +151,55 @@ export function CodexWeb() {
   }, [activeId]);
 
   return (
-    <div className="app">
+    <div className={`app${sidebarOpen ? " sidebar-open" : ""}`}>
       <Sidebar
         tasks={tasks}
         activeId={activeId}
-        onSelect={setActiveId}
-        onNew={() => setShowNew(true)}
+        onSelect={selectTask}
+        onNew={() => {
+          setShowNew(true);
+          setSidebarOpen(false);
+        }}
         user={user}
+      />
+      <button
+        type="button"
+        className="sidebar-backdrop"
+        aria-label="サイドバーを閉じる"
+        onClick={() => setSidebarOpen(false)}
+        tabIndex={sidebarOpen ? 0 : -1}
       />
       <main className="main">
         {active ? (
-          <TaskView task={active} onSend={sendFollowUp} onStop={stopTask} error={error} />
+          <TaskView
+            task={active}
+            onSend={sendFollowUp}
+            onStop={stopTask}
+            error={error}
+            onOpenSidebar={() => setSidebarOpen(true)}
+          />
         ) : (
-          <div className="center-page">
-            <div>左のリストからタスクを選択するか、新しいタスクを作成してください。</div>
-            <button className="primary" onClick={() => setShowNew(true)}>
-              + 新しいタスク
-            </button>
-          </div>
+          <>
+            <header className="main-header">
+              <button
+                type="button"
+                className="menu-btn"
+                aria-label="サイドバーを開く"
+                onClick={() => setSidebarOpen(true)}
+              >
+                ☰
+              </button>
+              <div className="info">
+                <div className="title">Codex Web</div>
+              </div>
+            </header>
+            <div className="center-page">
+              <div>左のリストからタスクを選択するか、新しいタスクを作成してください。</div>
+              <button className="primary" onClick={() => setShowNew(true)}>
+                + 新しいタスク
+              </button>
+            </div>
+          </>
         )}
       </main>
 
@@ -257,11 +294,13 @@ function TaskView({
   onSend,
   onStop,
   error,
+  onOpenSidebar,
 }: {
   task: Task;
   onSend: (content: string) => void;
   onStop: () => void;
   error: string | null;
+  onOpenSidebar: () => void;
 }) {
   const [draft, setDraft] = useState("");
   const threadRef = useRef<HTMLDivElement>(null);
@@ -285,13 +324,21 @@ function TaskView({
   return (
     <>
       <header className="main-header">
+        <button
+          type="button"
+          className="menu-btn"
+          aria-label="サイドバーを開く"
+          onClick={onOpenSidebar}
+        >
+          ☰
+        </button>
         <div className="info">
           <div className="title">{task.title}</div>
           <div className="cwd">{task.cwd}</div>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <div className="header-status">
           <span className={`status-dot status-${task.status}`} />
-          <span style={{ color: "var(--muted)", fontSize: 12 }}>{task.status}</span>
+          <span className="status-label">{task.status}</span>
           {isRunning && (
             <button onClick={onStop} title="Stop">
               停止
