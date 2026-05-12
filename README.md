@@ -1,4 +1,4 @@
-# codexweb
+# codexweb (test)
 
 OpenAI Codex CLI ([`openai/codex`](https://github.com/openai/codex)) を Web UI から
 触れるようにする、Next.js ベースの薄いラッパーです。Codex Web や Claude Code
