@@ -29,6 +29,7 @@ body {
     "Helvetica Neue", Arial, "Noto Sans JP", sans-serif;
   font-size: 14px;
   height: 100%;
+  -webkit-text-size-adjust: 100%;
 }
 
 button {
@@ -107,7 +108,47 @@ pre {
   display: grid;
   grid-template-columns: 280px 1fr;
   height: 100vh;
-  width: 100vw;
+  /* Use dynamic viewport height where supported so iOS Safari's URL bar
+     doesn't get hidden behind the composer. */
+  height: 100dvh;
+  width: 100%;
+}
+
+.menu-btn {
+  display: none;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+.sidebar-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 55;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+}
+.sidebar-backdrop:hover {
+  background: rgba(0, 0, 0, 0.5);
+  border: 0;
+}
+.header-status {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex: 0 0 auto;
+}
+.header-status .status-label {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .sidebar {
@@ -398,4 +439,110 @@ pre {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ----- Mobile ---------------------------------------------------------- */
+
+@media (max-width: 768px) {
+  .app {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: min(86vw, 320px);
+    height: 100%;
+    height: 100dvh;
+    z-index: 60;
+    transform: translateX(-100%);
+    transition: transform 0.22s ease;
+    box-shadow: 2px 0 12px rgba(0, 0, 0, 0.4);
+  }
+  .app.sidebar-open .sidebar {
+    transform: translateX(0);
+  }
+  .app.sidebar-open .sidebar-backdrop {
+    display: block;
+  }
+
+  .menu-btn {
+    display: inline-flex;
+  }
+
+  .main-header {
+    padding: 10px 12px;
+    gap: 8px;
+  }
+  .main-header .info {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .main-header .cwd {
+    font-size: 10.5px;
+  }
+  .header-status .status-label {
+    display: none; /* dot alone is enough on tight screens */
+  }
+
+  .thread {
+    padding: 12px;
+    gap: 10px;
+  }
+
+  .bubble {
+    padding: 10px 12px;
+    max-width: 100%;
+  }
+
+  .composer {
+    padding: 10px 12px;
+    /* Respect notch / home-indicator on iOS. */
+    padding-bottom: calc(10px + env(safe-area-inset-bottom));
+  }
+  .composer-row {
+    flex-direction: column;
+    gap: 6px;
+  }
+  .composer-row .send {
+    align-self: stretch;
+  }
+  textarea {
+    min-height: 64px;
+  }
+
+  /* iOS auto-zooms inputs whose font-size is <16px when focused.
+     Bump everything on phones so the layout stays put. */
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+
+  /* Bigger tap targets. */
+  button {
+    padding: 8px 14px;
+    min-height: 36px;
+  }
+  .login-btn {
+    padding: 12px 20px;
+    min-height: 44px;
+  }
+
+  .dialog-backdrop {
+    padding: 12px;
+    align-items: flex-end;
+  }
+  .dialog {
+    padding: 16px;
+    padding-bottom: calc(16px + env(safe-area-inset-bottom));
+    border-radius: 12px 12px 0 0;
+    max-height: 92dvh;
+    overflow-y: auto;
+  }
+
+  .user-chip .email {
+    max-width: 120px;
+  }
 }
