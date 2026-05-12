@@ -8,7 +8,7 @@ export async function POST(
   context: { params: Promise<{ id: string }> },
 ) {
   const { id } = await context.params;
-  const ok = taskStore.stop(id);
+  const ok = await taskStore.stop(id);
   if (!ok) {
     return NextResponse.json(
       { error: "Task is not running or not found." },

@@ -9,7 +9,7 @@ export async function GET(
   context: { params: Promise<{ id: string }> },
 ) {
   const { id } = await context.params;
-  const task = taskStore.get(id);
+  const task = await taskStore.get(id);
   if (!task) return new Response("Not found", { status: 404 });
 
   const stream = new ReadableStream({

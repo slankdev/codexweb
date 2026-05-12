@@ -5,7 +5,7 @@ import type { CreateTaskInput } from "@/lib/types";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  return NextResponse.json({ tasks: taskStore.list() });
+  return NextResponse.json({ tasks: await taskStore.list() });
 }
 
 export async function POST(req: Request) {
@@ -21,7 +21,7 @@ export async function POST(req: Request) {
   if (!prompt) return NextResponse.json({ error: "prompt is required" }, { status: 400 });
   if (!cwd) return NextResponse.json({ error: "cwd is required" }, { status: 400 });
 
-  const task = taskStore.create({
+  const task = await taskStore.create({
     prompt,
     cwd,
     model: typeof body.model === "string" && body.model ? body.model : undefined,
