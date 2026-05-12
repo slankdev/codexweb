@@ -190,7 +190,7 @@ export function CodexWeb() {
                 ☰
               </button>
               <div className="info">
-                <div className="title">Codex Web</div>
+                <div className="title">Codex Web Test</div>
               </div>
             </header>
             <div className="center-page">
