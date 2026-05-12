@@ -42,6 +42,8 @@ RUN if [ "$INSTALL_CODEX" = "true" ]; then \
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
+COPY scripts/docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
 
 # Default to running as root. This image is meant to be self-hosted as a
 # dev tool with bind-mounted project directories — running as root makes
@@ -52,5 +54,5 @@ COPY --from=builder /app/public ./public
 ENV HOME=/root
 EXPOSE 3000
 
-ENTRYPOINT ["/sbin/tini", "--"]
+ENTRYPOINT ["/sbin/tini", "--", "/docker-entrypoint.sh"]
 CMD ["node", "server.js"]
