@@ -10,8 +10,8 @@ on:
         required: false
         default: ""
 
-# Single-instance app (in-memory task store), so cancel any in-flight deploys
-# when a new commit comes in — we don't want overlapping revisions racing.
+# Single-instance app (in-memory task store on top of MySQL), so cancel
+# any in-flight deploys when a new commit comes in.
 concurrency:
   group: cloudrun-deploy
   cancel-in-progress: true
@@ -28,6 +28,7 @@ jobs:
       GCP_REGION: ${{ vars.GCP_REGION }}
       AR_REPO: ${{ vars.ARTIFACT_REGISTRY_REPO }}
       SERVICE: ${{ vars.CLOUD_RUN_SERVICE }}
+      CLOUD_SQL_INSTANCE: ${{ vars.CLOUD_SQL_INSTANCE }}
 
     steps:
       - name: Checkout
@@ -56,6 +57,45 @@ jobs:
 
       - name: Set up gcloud
         uses: google-github-actions/setup-gcloud@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Node deps
+        # The repo doesn't commit a lockfile, so use `npm install` (with
+        # --no-audit/--no-fund to keep output quiet).
+        run: npm install --no-audit --no-fund
+
+      - name: Run DB migrations
+        if: ${{ vars.CLOUD_SQL_INSTANCE != '' }}
+        run: |
+          set -euo pipefail
+          # Download the Cloud SQL Auth Proxy and start it in the background.
+          # It picks up Application Default Credentials from the auth step.
+          curl -fsSL -o cloud-sql-proxy \
+            https://storage.googleapis.com/cloud-sql-connectors/cloud-sql-proxy/v2.14.2/cloud-sql-proxy.linux.amd64
+          chmod +x cloud-sql-proxy
+          ./cloud-sql-proxy --port 3306 "$CLOUD_SQL_INSTANCE" &
+          PROXY_PID=$!
+          trap "kill $PROXY_PID 2>/dev/null || true" EXIT
+
+          # Wait for the proxy to start listening.
+          for i in $(seq 1 30); do
+            if nc -z 127.0.0.1 3306; then break; fi
+            sleep 0.5
+          done
+          if ! nc -z 127.0.0.1 3306; then
+            echo "Cloud SQL Auth Proxy did not start." >&2
+            exit 1
+          fi
+
+          DATABASE_URL=$(gcloud secrets versions access latest \
+            --secret=DATABASE_URL_MIGRATE \
+            --project="$GCP_PROJECT_ID")
+          export DATABASE_URL
+          npm run db:migrate
 
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
@@ -117,6 +157,14 @@ jobs:
           if [ "${{ vars.OAUTH_USE_CLIENT_SECRET }}" != "false" ]; then
             secrets+=",OAUTH_CLIENT_SECRET=OAUTH_CLIENT_SECRET:latest"
           fi
+          if [ -n "$CLOUD_SQL_INSTANCE" ]; then
+            secrets+=",DATABASE_URL=DATABASE_URL:latest"
+          fi
+
+          sql_flag=()
+          if [ -n "$CLOUD_SQL_INSTANCE" ]; then
+            sql_flag=(--add-cloudsql-instances "$CLOUD_SQL_INSTANCE")
+          fi
 
           gcloud run deploy "$SERVICE" \
             --image="${{ steps.tag.outputs.tag_sha }}" \
@@ -133,6 +181,7 @@ jobs:
             --execution-environment=gen2 \
             --set-secrets="$secrets" \
             "${set_env_flag[@]}" \
+            "${sql_flag[@]}" \
             --quiet
 
       - name: Show service URL

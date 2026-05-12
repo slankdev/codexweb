@@ -17,7 +17,7 @@ export async function POST(
   const content = typeof body.content === "string" ? body.content.trim() : "";
   if (!content) return NextResponse.json({ error: "content is required" }, { status: 400 });
 
-  const ok = taskStore.followUp(id, content);
+  const ok = await taskStore.followUp(id, content);
   if (!ok) {
     return NextResponse.json(
       { error: "Task is not ready for a follow-up (not found, or still running)." },
