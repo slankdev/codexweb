@@ -11,6 +11,13 @@ interface TaskSummary {
   createdAt: number;
 }
 
+interface CurrentUser {
+  sub: string;
+  email: string;
+  name?: string;
+  picture?: string;
+}
+
 function summary(t: Task): TaskSummary {
   return { id: t.id, title: t.title, cwd: t.cwd, status: t.status, createdAt: t.createdAt };
 }
@@ -21,6 +28,16 @@ export function CodexWeb() {
   const [active, setActive] = useState<Task | null>(null);
   const [showNew, setShowNew] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [user, setUser] = useState<CurrentUser | null>(null);
+
+  useEffect(() => {
+    fetch("/api/auth/me")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data?.user) setUser(data.user as CurrentUser);
+      })
+      .catch(() => {});
+  }, []);
 
   const refreshTasks = useCallback(async () => {
     const res = await fetch("/api/tasks");
@@ -134,6 +151,7 @@ export function CodexWeb() {
         activeId={activeId}
         onSelect={setActiveId}
         onNew={() => setShowNew(true)}
+        user={user}
       />
       <main className="main">
         {active ? (
@@ -164,11 +182,13 @@ function Sidebar({
   activeId,
   onSelect,
   onNew,
+  user,
 }: {
   tasks: TaskSummary[];
   activeId: string | null;
   onSelect: (id: string) => void;
   onNew: () => void;
+  user: CurrentUser | null;
 }) {
   return (
     <aside className="sidebar">
@@ -199,6 +219,29 @@ function Sidebar({
           ))
         )}
       </div>
+      {user && (
+        <div
+          style={{
+            padding: "10px 12px",
+            borderTop: "1px solid var(--border)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 8,
+          }}
+        >
+          <span className="user-chip" title={user.email}>
+            {user.picture ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={user.picture} alt="" />
+            ) : null}
+            <span className="email">{user.name || user.email}</span>
+          </span>
+          <a href="/api/auth/logout" title="ログアウト" style={{ fontSize: 12 }}>
+            Logout
+          </a>
+        </div>
+      )}
     </aside>
   );
 }

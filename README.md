@@ -55,6 +55,38 @@ npm run dev
 | `CODEX_BIN` | spawn する codex バイナリへの絶対パス。未指定なら `vendor/codex/codex-cli/bin/codex.js` → `codex` (PATH) の順で解決。 |
 | `CODEX_DEFAULT_CWD` | 「新しいタスク」ダイアログでデフォルトに入れる作業ディレクトリ。 |
 | `OPENAI_API_KEY` | Codex CLI が呼び出すモデルの認証用 (詳細は upstream の README 参照)。 |
+| `AUTH_SECRET` | **必須**。セッション Cookie の HMAC 署名鍵 (16 文字以上)。`openssl rand -base64 32` で生成。 |
+| `GOOGLE_CLIENT_ID` | **必須**。Google OAuth 2.0 クライアント ID。 |
+| `GOOGLE_CLIENT_SECRET` | **必須**。Google OAuth 2.0 クライアントシークレット。 |
+| `ALLOWED_EMAILS` | ログイン許可リスト。`alice@example.com,@your-company.com` のようにメール or `@` ドメインを並べる。未設定だと **任意の Google アカウントがログイン可能**。 |
+| `AUTH_BASE_URL` | OAuth リダイレクト URL を組み立てるベース URL。未設定ならリクエストヘッダから自動推測。 |
+
+### 認証 (Google OAuth)
+
+Web UI と API ルートは Next.js Middleware で保護されており、未ログインだと
+ブラウザは `/login` にリダイレクト、API は `401 Unauthorized` を返します。
+ログインは Google OAuth 2.0 のみ。
+
+セットアップ:
+
+1. [Google Cloud Console](https://console.cloud.google.com/) で OAuth 2.0
+   クライアント ID を作成 (Application type: **Web application**)。
+2. Authorized redirect URIs に下記を追加:
+   - `http://localhost:3000/api/auth/callback` (開発用)
+   - `https://<your-host>/api/auth/callback` (本番用)
+3. クライアント ID/シークレットを `.env.local` (またはコンテナの `.env`) に設定。
+4. `AUTH_SECRET` をランダム値で設定 (`openssl rand -base64 32`)。
+5. 本番では必ず `ALLOWED_EMAILS` を設定して許可アカウントを絞ること
+   (codex はサーバ上で任意コードを実行できるため、不特定のログインは危険)。
+
+提供エンドポイント:
+
+| Method | Path | 説明 |
+| --- | --- | --- |
+| GET | `/api/auth/login` | Google の同意画面へリダイレクト (`?redirect=/path` 対応) |
+| GET | `/api/auth/callback` | Google からのコールバック (内部用) |
+| GET/POST | `/api/auth/logout` | セッション Cookie を破棄 |
+| GET | `/api/auth/me` | 現在ログイン中のユーザ情報 (未ログインなら `{ user: null }`) |
 
 ## 使い方
 
@@ -194,7 +226,7 @@ PATH に `codex` がない。`CODEX_BIN` に絶対パスを指定するか、`np
 - タスクの永続化は **メモリのみ**。プロセス再起動で消えます。
 - マルチターン対話は、各ターンで `codex exec` を新規プロセスとして起動する
   シンプル実装です (Codex 側の会話履歴は CLI の挙動に依存)。
-- 認証なし — ローカル/個人利用前提です。
+- 認証は Google OAuth のみサポート (`ALLOWED_EMAILS` でアカウント制限可)。
 - Codex CLI の `--json` 出力スキーマはバージョンにより差異があり、未知の
   イベントは `stdout` として表示されます (`lib/codex-runner.ts` の
   `mapCodexEvent` で必要に応じて拡張可能)。
