@@ -27,7 +27,7 @@ ENV HOSTNAME=0.0.0.0
 
 # Tools needed at runtime: git for codex submodule operations, tini for
 # clean signal handling so SIGTERM stops codex children.
-RUN apk add --no-cache libc6-compat git tini
+RUN apk add --no-cache libc6-compat git tini bash curl
 
 # Pre-install the codex CLI globally so spawning `codex` works out of the
 # box. Override at runtime by setting CODEX_BIN, or skip the install with
