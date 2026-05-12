@@ -65,6 +65,11 @@ export async function GET(req: Request) {
     grant_type: "authorization_code",
     code_verifier: stored.codeVerifier,
   });
+  // PKCE alone is sufficient for public clients; confidential clients
+  // (e.g. Google "Web application") additionally require the secret.
+  if (config.clientSecret) {
+    tokenParams.set("client_secret", config.clientSecret);
+  }
 
   const tokenRes = await fetch(config.tokenUrl, {
     method: "POST",

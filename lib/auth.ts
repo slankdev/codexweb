@@ -1,12 +1,10 @@
 // Lightweight OAuth 2.0 (Authorization Code + PKCE) + session helpers.
 //
 // IdP-agnostic: defaults to Google but every endpoint is overridable via
-// OAUTH_* env vars. This implementation is **public-client only** — the
-// token exchange relies on PKCE alone and does NOT send a client_secret.
-// Use an IdP that supports public clients (Auth0/Keycloak/Cognito/...);
-// for Google, this means a "Desktop app" or "iOS/Android" client type
-// (Google's "Web application" client mandates a secret and will reject
-// this flow).
+// OAUTH_* env vars. PKCE (S256) is always applied. `OAUTH_CLIENT_SECRET`
+// is optional — set it for confidential clients that require it
+// (e.g. Google "Web application" type), leave it unset for public
+// clients (Auth0/Keycloak/Cognito SPA/Native, etc.).
 //
 // Sessions and OAuth state cookies are HMAC-signed via Web Crypto, so the
 // same helpers run in the Edge runtime (middleware) and Node runtime
@@ -39,6 +37,7 @@ export interface OAuthStatePayload {
 
 export interface OAuthConfig {
   clientId: string;
+  clientSecret?: string;
   authorizeUrl: string;
   tokenUrl: string;
   userinfoUrl: string;
@@ -195,6 +194,7 @@ export function getOAuthConfig(): OAuthConfig {
   }
   return {
     clientId,
+    clientSecret: process.env.OAUTH_CLIENT_SECRET || undefined,
     authorizeUrl: process.env.OAUTH_AUTHORIZE_URL || DEFAULT_AUTHORIZE_URL,
     tokenUrl: process.env.OAUTH_TOKEN_URL || DEFAULT_TOKEN_URL,
     userinfoUrl: process.env.OAUTH_USERINFO_URL || DEFAULT_USERINFO_URL,
