@@ -56,50 +56,50 @@ npm run dev
 | `CODEX_DEFAULT_CWD` | 「新しいタスク」ダイアログでデフォルトに入れる作業ディレクトリ。 |
 | `OPENAI_API_KEY` | Codex CLI が呼び出すモデルの認証用 (詳細は upstream の README 参照)。 |
 | `AUTH_SECRET` | **必須**。セッション/state Cookie の HMAC 署名鍵 (16 文字以上)。`openssl rand -base64 32` で生成。 |
-| `OAUTH_CLIENT_ID` | **必須**。OAuth 2.0 クライアント ID (public client)。 |
+| `OAUTH_CLIENT_ID` | **必須**。OAuth 2.0 クライアント ID。 |
+| `OAUTH_CLIENT_SECRET` | confidential クライアント (Google "Web application" 型など) のみ必要。public クライアントなら省略可。 |
 | `OAUTH_AUTHORIZE_URL` / `OAUTH_TOKEN_URL` / `OAUTH_USERINFO_URL` | IdP のエンドポイント。デフォルトは Google。 |
 | `OAUTH_SCOPES` | 要求スコープ (デフォルト `openid email profile`)。 |
 | `ALLOWED_EMAILS` | ログイン許可リスト。`alice@example.com,@your-company.com` のようにメール or `@` ドメインを並べる。未設定だと **誰でもログイン可能**。 |
 | `AUTH_BASE_URL` | OAuth リダイレクト URL を組み立てるベース URL。未設定ならリクエストヘッダから自動推測 (Cloud Run など proxy 経由なら明示推奨)。 |
 
-### 認証 (OAuth 2.0 + PKCE, public client)
+### 認証 (OAuth 2.0 + PKCE)
 
 Web UI と API ルートは Next.js Middleware で保護されており、未ログインだと
 ブラウザは `/login` にリダイレクト、API は `401 Unauthorized` を返します。
-フローは **OAuth 2.0 Authorization Code + PKCE (S256)** で、トークン交換
-時に client_secret は送りません (= public client)。IdP は環境変数で差し替え
-可能で、デフォルトは Google のエンドポイント。
+フローは **OAuth 2.0 Authorization Code + PKCE (S256)** で常時。
+`OAUTH_CLIENT_SECRET` は設定されていれば token endpoint に併送されるので、
+public / confidential どちらのクライアントにも対応します。
 
 #### IdP の選び方
 
-PKCE 単独で認証が成立する必要があるため、**public client をサポートする
-IdP** を選んでください:
+| IdP | クライアント種別 | `OAUTH_CLIENT_SECRET` | メモ |
+| --- | --- | --- | --- |
+| Google "Web application" | confidential | 必須 | Cloud Run など HTTPS ホスティング向け。 |
+| Google "Desktop app" | public | 不要 | ローカル限定 (redirect URI が loopback)。 |
+| Auth0 / Keycloak / Okta / Cognito (Native/SPA) | public | 不要 | 任意 HTTPS redirect 可。 |
+| Auth0 / Keycloak (Regular Web App) | confidential | 必須 | 同上。 |
 
-| IdP | 動作 | メモ |
-| --- | --- | --- |
-| Auth0 / Keycloak / Okta / Azure AD / Cognito 等 | ✅ public client 設定で動く | Cloud Run / 任意 HTTPS リダイレクト URI 可 |
-| Google "Desktop app" 型 | ⚠️ ローカル開発のみ | redirect URI が loopback (`http://127.0.0.1[:port]/...`) 限定 |
-| Google "Web application" 型 | ❌ 非対応 | token endpoint が client_secret を必須とするため動かない |
-
-#### Google (Desktop, ローカル開発のみ) の例
+#### Google "Web application" でのセットアップ
 
 1. [Google Cloud Console](https://console.cloud.google.com/) で OAuth 2.0
-   クライアント ID を作成 (Application type: **Desktop app**)。
-2. `.env.local` に設定:
+   クライアント ID を作成 (Application type: **Web application**)。
+2. Authorized redirect URIs に下記を追加:
+   - `http://localhost:3000/api/auth/callback` (開発用)
+   - `https://<cloud-run-host>/api/auth/callback` (本番用)
+3. `.env.local` または Secret Manager / GitHub Variables 経由で設定:
    ```env
    OAUTH_CLIENT_ID=<client id>
+   OAUTH_CLIENT_SECRET=<client secret>
    AUTH_SECRET=$(openssl rand -base64 32)
    ALLOWED_EMAILS=you@example.com
-   AUTH_BASE_URL=http://127.0.0.1:3000
    ```
-3. `npm run dev` で `http://127.0.0.1:3000` を開く (※ `localhost` ではなく
-   `127.0.0.1` を使うと Google の loopback 判定にマッチします)。
 
-#### 他の IdP に差し替え (例: Keycloak)
+#### 他の IdP の例 (Keycloak public client)
 
 ```env
 OAUTH_CLIENT_ID=codexweb
-# secret 不要 (Keycloak で public client にする)
+# OAUTH_CLIENT_SECRET は省略 (Keycloak で public client にする)
 OAUTH_AUTHORIZE_URL=https://kc.example.com/realms/main/protocol/openid-connect/auth
 OAUTH_TOKEN_URL=https://kc.example.com/realms/main/protocol/openid-connect/token
 OAUTH_USERINFO_URL=https://kc.example.com/realms/main/protocol/openid-connect/userinfo
@@ -211,17 +211,16 @@ gcloud iam service-accounts add-iam-policy-binding "$SA_EMAIL" \
   --role=roles/iam.workloadIdentityUser \
   --member="principalSet://iam.googleapis.com/projects/$PROJECT_NUM/locations/global/workloadIdentityPools/github/attribute.repository/<OWNER>/codexweb"
 
-# Secret Manager にシークレット投入
+# Secret Manager にシークレット投入 (Google Web app 型を使う想定)
 printf "%s" "$(openssl rand -base64 32)" | gcloud secrets create AUTH_SECRET --data-file=- --project="$PROJECT_ID"
-printf "%s" "<your-public-client-id>"    | gcloud secrets create OAUTH_CLIENT_ID --data-file=- --project="$PROJECT_ID"
+printf "%s" "<your-oauth-client-id>"     | gcloud secrets create OAUTH_CLIENT_ID --data-file=- --project="$PROJECT_ID"
+printf "%s" "<your-oauth-client-secret>" | gcloud secrets create OAUTH_CLIENT_SECRET --data-file=- --project="$PROJECT_ID"
 printf "%s" "sk-..."                     | gcloud secrets create OPENAI_API_KEY --data-file=- --project="$PROJECT_ID"
 ```
 
-> **IdP の用意**: Cloud Run 上では public client をサポートする IdP
-> (Auth0 / Keycloak / Cognito 等) を使ってください。Google の Web app 型は
-> client_secret 必須のため非対応です。`OAUTH_AUTHORIZE_URL` /
-> `OAUTH_TOKEN_URL` / `OAUTH_USERINFO_URL` は GitHub Actions の Variables
-> で渡すか、ワークフローを編集して `--set-env-vars` に追加してください。
+> **public client を使う場合**: `OAUTH_CLIENT_SECRET` シークレットを作らず、
+> リポジトリ Variables で `OAUTH_USE_CLIENT_SECRET=false` をセットすると
+> workflow が secret 取得をスキップします。
 
 #### GitHub 側の設定
 

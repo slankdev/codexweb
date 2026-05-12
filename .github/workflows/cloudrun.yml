@@ -108,11 +108,15 @@ jobs:
             set_env_flag=(--set-env-vars "$env_joined")
           fi
 
-          # Public-client PKCE: no OAUTH_CLIENT_SECRET. Secret names in
-          # Secret Manager must match the env var name on the right.
+          # PKCE is always on. Send client_secret only when the IdP needs
+          # it (Google "Web application" type, Auth0 Regular Web App, ...).
+          # Skip the secret entirely by setting OAUTH_USE_CLIENT_SECRET=false.
           secrets="AUTH_SECRET=AUTH_SECRET:latest"
           secrets+=",OAUTH_CLIENT_ID=OAUTH_CLIENT_ID:latest"
           secrets+=",OPENAI_API_KEY=OPENAI_API_KEY:latest"
+          if [ "${{ vars.OAUTH_USE_CLIENT_SECRET }}" != "false" ]; then
+            secrets+=",OAUTH_CLIENT_SECRET=OAUTH_CLIENT_SECRET:latest"
+          fi
 
           gcloud run deploy "$SERVICE" \
             --image="${{ steps.tag.outputs.tag_sha }}" \
