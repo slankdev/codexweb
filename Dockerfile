@@ -29,6 +29,16 @@ ENV HOSTNAME=0.0.0.0
 # clean signal handling so SIGTERM stops codex children.
 RUN apk add --no-cache libc6-compat git tini bash curl
 
+# codex's shell_snapshot feature dumps shell state with bash (`declare`
+# etc.) and then validates the snapshot by re-parsing it with /bin/sh.
+# On Alpine /bin/sh is busybox ash, which chokes on bash-only syntax
+# (e.g. function bodies, arrays) and logs:
+#   ERROR codex_core::shell_snapshot: Shell snapshot validation failed:
+#     ... line N: syntax error: unterminated quoted string
+# Point /bin/sh at bash so the validation step parses the same syntax
+# that was emitted.
+RUN ln -sf /bin/bash /bin/sh
+
 # Pre-install the codex CLI globally so spawning `codex` works out of the
 # box. Override at runtime by setting CODEX_BIN, or skip the install with
 # `--build-arg INSTALL_CODEX=false`.
