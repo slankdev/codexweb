@@ -62,6 +62,8 @@ npm run dev
 | `OAUTH_SCOPES` | 要求スコープ (デフォルト `openid email profile`)。 |
 | `ALLOWED_EMAILS` | ログイン許可リスト。`alice@example.com,@your-company.com` のようにメール or `@` ドメインを並べる。未設定だと **誰でもログイン可能**。 |
 | `AUTH_BASE_URL` | OAuth リダイレクト URL を組み立てるベース URL。未設定ならリクエストヘッダから自動推測 (Cloud Run など proxy 経由なら明示推奨)。 |
+| `CODEXWEB_AUTH_PROXY_URL` | (preview デプロイ用) Preview の `/login` ボタンがリダイレクトする canonical (= prod) の URL。これがセットされていると preview は自分で OAuth せず prod に丸投げする。 |
+| `CODEXWEB_PREVIEW_ORIGIN_PATTERN` | (prod デプロイ用) Prod が `?preview=…` 付き login を受け付けて handoff token を bounce してよい origin の正規表現。未設定だと preview への bounce を全部拒否する (= preview auth が動かない)。 |
 
 ### 認証 (OAuth 2.0 + PKCE)
 
@@ -232,12 +234,59 @@ printf "%s" "sk-..."                     | gcloud secrets create OPENAI_API_KEY 
 | `WIF_SERVICE_ACCOUNT` | `codexweb-deployer@<PROJECT_ID>.iam.gserviceaccount.com` |
 | `ALLOWED_EMAILS` | (推奨) 許可メール/ドメイン |
 | `AUTH_BASE_URL` | (推奨) `https://<service>-<hash>-<region>.a.run.app` |
+| `CODEXWEB_AUTH_PROXY_URL` | (PR Preview を使うなら必須) 本番の URL。例 `https://<service>-<hash>-<region>.a.run.app` |
+| `CODEXWEB_PREVIEW_ORIGIN_PATTERN` | (PR Preview を使うなら必須) `^https://codexweb-pr-\d+-[a-z0-9-]+\.[a-z0-9-]+\.run\.app$` のような preview URL の正規表現 |
 | `CODEX_DEFAULT_CWD` | (任意) 例 `/tmp` |
 
 初回デプロイで URL が確定するので、その URL を Google Cloud Console の
 OAuth クライアントの "Authorized redirect URIs" にも追加してください
 (`<URL>/api/auth/callback`)。あわせて `AUTH_BASE_URL` を変数にセットして
 2 回目以降のデプロイで使うのが確実です。
+
+### PR Preview
+
+`pull_request` イベントで `.github/workflows/pr-preview.yml` が起動し、
+**PR ごとに専用 Cloud Run サービス** (`codexweb-pr-<NUMBER>`) を立てます。
+本番と同じ Artifact Registry / WIF / Secret を使い回しますが、`min-instances=0`
+で idle 中は無料です。タスクストアは **インメモリ** (Cloud SQL アタッチなし)
+なので、preview の chat 履歴はデプロイのたびに失われます。
+
+ライフサイクル:
+
+- PR open / push: 自動デプロイ → URL を bot コメントで通知
+- PR close (merge / 不採用問わず): Cloud Run サービスを自動削除
+
+#### Auth (本番経由プロキシ)
+
+Google OAuth は redirect URI のワイルドカード非対応なので、PR ごとに変わる
+preview URL を都度登録するのは現実的でない。代わりに **preview は本番経由で
+認証を完結させる** 仕組みになっている:
+
+```
+preview /login
+   └─ "Sign in" を押すと →  prod /api/auth/login?preview=<preview-origin>&redirect=...
+                              │  state Cookie を prod ドメインに置いて Google へ
+                              ▼
+                          Google → prod /api/auth/callback
+                              │  token 交換 → userinfo → email allowlist
+                              │  state.previewOrigin が pattern にマッチすれば
+                              ▼
+                          handoff token (90s 有効) を URL に乗せて
+                              preview /api/auth/preview-callback?token=...&redirect=...
+                                       │  AUTH_SECRET で検証
+                                       ▼
+                                  Session Cookie をセットして redirect 先へ
+```
+
+- Google OAuth client に登録する redirect URI は **本番の 1 つだけ** で OK。
+- 2 回目以降の preview ログインは prod 側のセッションがあれば Google を経由
+  せずに即 handoff される (= 1 クリックでログイン)。
+- `AUTH_SECRET` は本番と preview で共有 (Secret Manager の 1 つを両方が参照)。
+- preview は **`OAUTH_CLIENT_ID/SECRET` を持たない** (OAuth dance は prod 側だけ
+  が行うため)。
+- 必須の Variable: `CODEXWEB_AUTH_PROXY_URL` (preview に渡る、prod の URL)、
+  `CODEXWEB_PREVIEW_ORIGIN_PATTERN` (prod に渡る、preview origin を許可する
+  正規表現)。詳細は下記。
 
 #### 制約メモ
 

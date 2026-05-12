@@ -3,11 +3,13 @@ import {
   OAUTH_STATE_COOKIE,
   SESSION_COOKIE,
   SESSION_TTL_SECONDS,
+  createHandoffToken,
   createSessionCookie,
   getOAuthConfig,
   isEmailAllowed,
   readOAuthState,
   resolveBaseUrl,
+  validatePreviewOrigin,
 } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
@@ -98,14 +100,41 @@ export async function GET(req: Request) {
     return loginErrorRedirect(base, `${info.email} is not allowed.`);
   }
 
-  const sessionCookie = await createSessionCookie({
+  const userPayload = {
     sub: info.sub,
     email: info.email,
     name: info.name,
     picture: info.picture,
-  });
+  };
 
   const redirectPath = stored.redirect && stored.redirect.startsWith("/") ? stored.redirect : "/";
+
+  // Re-validate the preview origin from the state cookie. We already
+  // validated it at /login time, but operators may have tightened the
+  // pattern between then and now — be paranoid and check again.
+  const previewOrigin = validatePreviewOrigin(stored.previewOrigin ?? null);
+
+  if (previewOrigin) {
+    // Set a canonical-side session too so subsequent preview logins
+    // from this browser skip the round-trip through Google.
+    const canonicalSession = await createSessionCookie(userPayload);
+    const handoff = await createHandoffToken(userPayload);
+    const target = new URL(`${previewOrigin}/api/auth/preview-callback`);
+    target.searchParams.set("token", handoff);
+    target.searchParams.set("redirect", redirectPath);
+    const res = NextResponse.redirect(target);
+    res.cookies.set(SESSION_COOKIE, canonicalSession, {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: base.startsWith("https://"),
+      path: "/",
+      maxAge: SESSION_TTL_SECONDS,
+    });
+    res.cookies.set(OAUTH_STATE_COOKIE, "", { httpOnly: true, path: "/", maxAge: 0 });
+    return res;
+  }
+
+  const sessionCookie = await createSessionCookie(userPayload);
   const res = NextResponse.redirect(`${base}${redirectPath}`);
   res.cookies.set(SESSION_COOKIE, sessionCookie, {
     httpOnly: true,
