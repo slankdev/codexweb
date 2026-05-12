@@ -181,6 +181,32 @@ docker run --rm --entrypoint sh ghcr.io/<owner>/codexweb:latest -c '
    # 起動時に CODEX_BIN を指定
    ```
 
+### `codex_api::endpoint::responses_websocket: ... 401 Unauthorized`
+
+Codex CLI が `wss://api.openai.com/v1/responses` への接続で 401 を返す場合、
+キーが無効ということもありますが、`/v1/models` が 200 を返すなら **WebSocket
+endpoint だけが認証通らない** ケースもあります。Codex CLI のフラグで HTTP
+streaming 等に切替えられる可能性があります。
+
+利用可能な feature flag を確認:
+
+```bash
+docker exec tmp codex features 2>&1
+```
+
+該当のフラグが見つかったら、`.env` に `CODEX_EXTRA_ARGS` で渡せます (再ビルド
+不要):
+
+```bash
+# 例
+CODEX_EXTRA_ARGS=--disable responses_websocket
+# or
+CODEX_EXTRA_ARGS=-c responses.transport=http
+```
+
+設定後、コンテナを `--env-file .env` で再起動すれば全 `codex exec` に自動で
+付与されます。
+
 ### `spawn codex ENOENT`
 
 PATH に `codex` がない。`CODEX_BIN` に絶対パスを指定するか、`npm i -g @openai/codex`
