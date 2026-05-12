@@ -101,6 +101,11 @@ jobs:
           [ -n "${{ vars.OAUTH_SCOPES }}"        ] && env_vars+=("OAUTH_SCOPES=${{ vars.OAUTH_SCOPES }}")
           [ -n "${{ vars.CODEX_DEFAULT_CWD }}"   ] && env_vars+=("CODEX_DEFAULT_CWD=${{ vars.CODEX_DEFAULT_CWD }}")
           [ -n "${{ vars.CODEX_EXTRA_ARGS }}"    ] && env_vars+=("CODEX_EXTRA_ARGS=${{ vars.CODEX_EXTRA_ARGS }}")
+          # Opt-in: when set, the canonical app is willing to bounce a
+          # handoff token to preview origins matching this regex. Required
+          # for the PR-preview auth-proxy flow.
+          [ -n "${{ vars.CODEXWEB_PREVIEW_ORIGIN_PATTERN }}" ] && \
+            env_vars+=("CODEXWEB_PREVIEW_ORIGIN_PATTERN=${{ vars.CODEXWEB_PREVIEW_ORIGIN_PATTERN }}")
 
           set_env_flag=()
           if [ ${#env_vars[@]} -gt 0 ]; then

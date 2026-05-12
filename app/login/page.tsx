@@ -1,3 +1,6 @@
+import { headers } from "next/headers";
+import { getAuthProxyUrl } from "@/lib/auth";
+
 type SearchParams = Promise<{ redirect?: string; error?: string }>;
 
 export default async function LoginPage({
@@ -7,7 +10,27 @@ export default async function LoginPage({
 }) {
   const { redirect, error } = await searchParams;
   const target = redirect && redirect.startsWith("/") ? redirect : "/";
-  const loginHref = `/api/auth/login?redirect=${encodeURIComponent(target)}`;
+
+  // PR previews don't own their own OAuth client — they delegate to a
+  // canonical deployment that holds the registered redirect URI. When
+  // CODEXWEB_AUTH_PROXY_URL is set, kick the login off there with our
+  // own origin as the `?preview=` param so the canonical can bounce a
+  // handoff token back to us after Google.
+  const proxy = getAuthProxyUrl();
+  let loginHref: string;
+  if (proxy) {
+    const h = await headers();
+    const proto = h.get("x-forwarded-proto") || "https";
+    const host = h.get("x-forwarded-host") || h.get("host") || "";
+    const origin = `${proto}://${host}`;
+    const params = new URLSearchParams({
+      preview: origin,
+      redirect: target,
+    });
+    loginHref = `${proxy}/api/auth/login?${params.toString()}`;
+  } else {
+    loginHref = `/api/auth/login?redirect=${encodeURIComponent(target)}`;
+  }
 
   return (
     <div className="center-page" style={{ flexDirection: "column", gap: 16 }}>

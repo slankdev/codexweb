@@ -32,6 +32,21 @@ export interface OAuthStatePayload {
   state: string;
   redirect: string;
   codeVerifier: string;
+  /** When set, the canonical app issues a handoff token to this origin
+   *  instead of setting a session cookie locally. Used by PR previews. */
+  previewOrigin?: string;
+  exp: number;
+}
+
+/** Short-lived signed payload that the canonical app hands to a preview
+ *  origin after a successful OAuth dance, in lieu of a session cookie
+ *  (which can't be set across origins). The preview exchanges this for
+ *  a real session cookie on its own domain. */
+export interface HandoffPayload {
+  sub: string;
+  email: string;
+  name?: string;
+  picture?: string;
   exp: number;
 }
 
@@ -149,15 +164,13 @@ export async function codeChallengeS256(verifier: string): Promise<string> {
 export async function createOAuthStateCookie(
   redirect: string,
   codeVerifier: string,
+  previewOrigin?: string,
 ): Promise<{ state: string; cookie: string }> {
   const state = b64urlEncode(randomBytes(16));
   const exp = Math.floor(Date.now() / 1000) + 60 * 10; // 10 min
-  const cookie = await sign<OAuthStatePayload>({
-    state,
-    redirect,
-    codeVerifier,
-    exp,
-  });
+  const payload: OAuthStatePayload = { state, redirect, codeVerifier, exp };
+  if (previewOrigin) payload.previewOrigin = previewOrigin;
+  const cookie = await sign<OAuthStatePayload>(payload);
   return { state, cookie };
 }
 
@@ -229,4 +242,57 @@ export function buildAuthorizeUrl(opts: {
     prompt: "select_account",
   });
   return opts.config.authorizeUrl + "?" + params.toString();
+}
+
+// ---------- Preview auth-proxy handoff --------------------------------
+
+const HANDOFF_TTL_SECONDS = 90;
+
+/** True when the running deployment delegates OAuth to a canonical app
+ *  (i.e. this is a PR preview). */
+export function isPreviewDeployment(): boolean {
+  return !!process.env.CODEXWEB_AUTH_PROXY_URL;
+}
+
+export function getAuthProxyUrl(): string | null {
+  const v = process.env.CODEXWEB_AUTH_PROXY_URL;
+  return v ? v.replace(/\/$/, "") : null;
+}
+
+/** Validate that an origin claimed by a `?preview=…` query string is one
+ *  we're willing to bounce a freshly-minted handoff token to.
+ *  Returns the normalised origin (no trailing slash) on success. */
+export function validatePreviewOrigin(raw: string | null): string | null {
+  if (!raw) return null;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:") return null;
+  const pattern = process.env.CODEXWEB_PREVIEW_ORIGIN_PATTERN;
+  if (!pattern) return null; // disabled unless operator opts in
+  let re: RegExp;
+  try {
+    re = new RegExp(pattern);
+  } catch {
+    return null;
+  }
+  const origin = `${url.protocol}//${url.host}`;
+  return re.test(origin) ? origin : null;
+}
+
+export async function createHandoffToken(
+  user: Omit<HandoffPayload, "exp">,
+): Promise<string> {
+  const exp = Math.floor(Date.now() / 1000) + HANDOFF_TTL_SECONDS;
+  return sign<HandoffPayload>({ ...user, exp });
+}
+
+export async function readHandoffToken(
+  token: string | undefined,
+): Promise<HandoffPayload | null> {
+  if (!token) return null;
+  return verify<HandoffPayload>(token);
 }

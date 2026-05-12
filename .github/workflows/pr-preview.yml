@@ -94,15 +94,25 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Deploy preview to Cloud Run
+        env:
+          # The canonical (= prod) Cloud Run URL. Previews delegate the
+          # OAuth dance there so Google's single registered redirect URI
+          # can serve every preview. Must be set as a repo Variable.
+          CODEXWEB_AUTH_PROXY_URL: ${{ vars.CODEXWEB_AUTH_PROXY_URL }}
         run: |
           set -euo pipefail
 
-          env_vars=("CODEXWEB_PREVIEW_PR=${PR_NUMBER}")
+          if [ -z "$CODEXWEB_AUTH_PROXY_URL" ]; then
+            echo "Missing required Variable: CODEXWEB_AUTH_PROXY_URL" >&2
+            echo "(should be the production Cloud Run URL, e.g. https://codexweb-xxx.a.run.app)" >&2
+            exit 1
+          fi
+
+          env_vars=(
+            "CODEXWEB_PREVIEW_PR=${PR_NUMBER}"
+            "CODEXWEB_AUTH_PROXY_URL=${CODEXWEB_AUTH_PROXY_URL}"
+          )
           [ -n "${{ vars.ALLOWED_EMAILS }}"      ] && env_vars+=("ALLOWED_EMAILS=${{ vars.ALLOWED_EMAILS }}")
-          [ -n "${{ vars.OAUTH_AUTHORIZE_URL }}" ] && env_vars+=("OAUTH_AUTHORIZE_URL=${{ vars.OAUTH_AUTHORIZE_URL }}")
-          [ -n "${{ vars.OAUTH_TOKEN_URL }}"     ] && env_vars+=("OAUTH_TOKEN_URL=${{ vars.OAUTH_TOKEN_URL }}")
-          [ -n "${{ vars.OAUTH_USERINFO_URL }}"  ] && env_vars+=("OAUTH_USERINFO_URL=${{ vars.OAUTH_USERINFO_URL }}")
-          [ -n "${{ vars.OAUTH_SCOPES }}"        ] && env_vars+=("OAUTH_SCOPES=${{ vars.OAUTH_SCOPES }}")
           [ -n "${{ vars.CODEX_DEFAULT_CWD }}"   ] && env_vars+=("CODEX_DEFAULT_CWD=${{ vars.CODEX_DEFAULT_CWD }}")
           [ -n "${{ vars.CODEX_EXTRA_ARGS }}"    ] && env_vars+=("CODEX_EXTRA_ARGS=${{ vars.CODEX_EXTRA_ARGS }}")
           # Deliberately NOT setting AUTH_BASE_URL — the app falls back
@@ -110,12 +120,12 @@ jobs:
           # so each preview's auto-assigned URL just works.
           env_joined=$(IFS=','; echo "${env_vars[*]}")
 
+          # Previews don't need the OAuth client config — the canonical
+          # app holds it. They DO need AUTH_SECRET (shared with the
+          # canonical app) to verify handoff tokens, and OPENAI_API_KEY
+          # for the codex CLI itself.
           secrets="AUTH_SECRET=AUTH_SECRET:latest"
-          secrets+=",OAUTH_CLIENT_ID=OAUTH_CLIENT_ID:latest"
           secrets+=",OPENAI_API_KEY=OPENAI_API_KEY:latest"
-          if [ "${{ vars.OAUTH_USE_CLIENT_SECRET }}" != "false" ]; then
-            secrets+=",OAUTH_CLIENT_SECRET=OAUTH_CLIENT_SECRET:latest"
-          fi
 
           gcloud run deploy "$SERVICE" \
             --image="${{ steps.tag.outputs.tag }}" \
@@ -160,15 +170,9 @@ jobs:
               `**URL**: ${url}`,
               `**Commit**: \`${sha}\``,
               "",
-              "### 初回ログインの準備",
-              "",
-              "Google Cloud Console → APIs & Services → Credentials → OAuth client → **Authorized redirect URIs** に下記を追加して **Save** してください。",
-              "",
-              "```",
-              `${url}/api/auth/callback`,
-              "```",
-              "",
-              "PR をクローズすると preview は自動削除されます (Chat 履歴はインメモリなのでデプロイのたびに失われます)。",
+              "ログインボタンを押すと本番経由で Google にリダイレクトされ、",
+              "セッションが Preview に bounce してきます (OAuth client 側の設定変更は不要)。",
+              "PR をクローズすると Preview は自動削除されます (chat 履歴はインメモリなのでデプロイのたびに失われます)。",
             ].join("\n");
 
             const { data: comments } = await github.rest.issues.listComments({
