@@ -4,7 +4,7 @@ import {
   SESSION_COOKIE,
   SESSION_TTL_SECONDS,
   createSessionCookie,
-  getGoogleClientConfig,
+  getOAuthConfig,
   isEmailAllowed,
   readOAuthState,
   resolveBaseUrl,
@@ -13,14 +13,17 @@ import {
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-interface GoogleTokenResponse {
+interface TokenResponse {
   access_token?: string;
   id_token?: string;
+  token_type?: string;
+  expires_in?: number;
+  scope?: string;
   error?: string;
   error_description?: string;
 }
 
-interface GoogleUserInfo {
+interface UserInfo {
   sub: string;
   email?: string;
   email_verified?: boolean;
@@ -36,7 +39,7 @@ export async function GET(req: Request) {
   const base = resolveBaseUrl(req);
 
   if (errorParam) {
-    return loginErrorRedirect(base, `Google returned: ${errorParam}`);
+    return loginErrorRedirect(base, `IdP returned: ${errorParam}`);
   }
   if (!code || !state) {
     return loginErrorRedirect(base, "Missing code/state in callback.");
@@ -52,21 +55,23 @@ export async function GET(req: Request) {
     return loginErrorRedirect(base, "Invalid OAuth state.");
   }
 
-  const { clientId, clientSecret } = getGoogleClientConfig();
+  const config = getOAuthConfig();
   const redirectUri = `${base}/api/auth/callback`;
 
-  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+  const tokenParams = new URLSearchParams({
+    code,
+    client_id: config.clientId,
+    redirect_uri: redirectUri,
+    grant_type: "authorization_code",
+    code_verifier: stored.codeVerifier,
+  });
+
+  const tokenRes = await fetch(config.tokenUrl, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      code,
-      client_id: clientId,
-      client_secret: clientSecret,
-      redirect_uri: redirectUri,
-      grant_type: "authorization_code",
-    }),
+    body: tokenParams,
   });
-  const token = (await tokenRes.json()) as GoogleTokenResponse;
+  const token = (await tokenRes.json()) as TokenResponse;
   if (!tokenRes.ok || !token.access_token) {
     return loginErrorRedirect(
       base,
@@ -74,15 +79,15 @@ export async function GET(req: Request) {
     );
   }
 
-  const uiRes = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
+  const uiRes = await fetch(config.userinfoUrl, {
     headers: { Authorization: `Bearer ${token.access_token}` },
   });
   if (!uiRes.ok) {
     return loginErrorRedirect(base, `userinfo failed: ${uiRes.status}`);
   }
-  const info = (await uiRes.json()) as GoogleUserInfo;
+  const info = (await uiRes.json()) as UserInfo;
   if (!info.email || info.email_verified === false) {
-    return loginErrorRedirect(base, "Google account email is not verified.");
+    return loginErrorRedirect(base, "Account email is not verified.");
   }
   if (!isEmailAllowed(info.email)) {
     return loginErrorRedirect(base, `${info.email} is not allowed.`);

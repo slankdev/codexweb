@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
 import {
   OAUTH_STATE_COOKIE,
+  buildAuthorizeUrl,
+  codeChallengeS256,
   createOAuthStateCookie,
-  getGoogleClientConfig,
-  googleAuthUrl,
+  generateCodeVerifier,
+  getOAuthConfig,
   resolveBaseUrl,
 } from "@/lib/auth";
 
@@ -15,12 +17,20 @@ export async function GET(req: Request) {
   const redirectParam = url.searchParams.get("redirect") || "/";
   const redirect = redirectParam.startsWith("/") ? redirectParam : "/";
 
-  const { clientId } = getGoogleClientConfig();
+  const config = getOAuthConfig();
   const base = resolveBaseUrl(req);
   const redirectUri = `${base}/api/auth/callback`;
 
-  const { state, cookie } = await createOAuthStateCookie(redirect);
-  const authUrl = googleAuthUrl({ clientId, redirectUri, state });
+  const codeVerifier = generateCodeVerifier();
+  const challenge = await codeChallengeS256(codeVerifier);
+  const { state, cookie } = await createOAuthStateCookie(redirect, codeVerifier);
+
+  const authUrl = buildAuthorizeUrl({
+    config,
+    redirectUri,
+    state,
+    codeChallenge: challenge,
+  });
 
   const res = NextResponse.redirect(authUrl);
   res.cookies.set(OAUTH_STATE_COOKIE, cookie, {

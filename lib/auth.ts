@@ -1,13 +1,26 @@
-// Lightweight Google OAuth + session helpers.
+// Lightweight OAuth 2.0 (Authorization Code + PKCE) + session helpers.
 //
-// Sessions are stored as an HMAC-signed cookie. Both signing and verification
-// use the Web Crypto API so the same helpers work in the Edge runtime
-// (middleware) and the Node runtime (route handlers).
+// IdP-agnostic: defaults to Google but every endpoint is overridable via
+// OAUTH_* env vars. This implementation is **public-client only** — the
+// token exchange relies on PKCE alone and does NOT send a client_secret.
+// Use an IdP that supports public clients (Auth0/Keycloak/Cognito/...);
+// for Google, this means a "Desktop app" or "iOS/Android" client type
+// (Google's "Web application" client mandates a secret and will reject
+// this flow).
+//
+// Sessions and OAuth state cookies are HMAC-signed via Web Crypto, so the
+// same helpers run in the Edge runtime (middleware) and Node runtime
+// (route handlers).
 
 export const SESSION_COOKIE = "codexweb_session";
 export const OAUTH_STATE_COOKIE = "codexweb_oauth_state";
 
 export const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
+
+const DEFAULT_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+const DEFAULT_TOKEN_URL = "https://oauth2.googleapis.com/token";
+const DEFAULT_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
+const DEFAULT_SCOPES = "openid email profile";
 
 export interface SessionPayload {
   sub: string;
@@ -20,7 +33,16 @@ export interface SessionPayload {
 export interface OAuthStatePayload {
   state: string;
   redirect: string;
+  codeVerifier: string;
   exp: number;
+}
+
+export interface OAuthConfig {
+  clientId: string;
+  authorizeUrl: string;
+  tokenUrl: string;
+  userinfoUrl: string;
+  scopes: string;
 }
 
 function b64urlEncode(bytes: Uint8Array): string {
@@ -105,15 +127,38 @@ export async function readSession(
   return verify<SessionPayload>(token);
 }
 
-export async function createOAuthStateCookie(redirect: string): Promise<{
-  state: string;
-  cookie: string;
-}> {
-  const stateBytes = new Uint8Array(16);
-  crypto.getRandomValues(stateBytes);
-  const state = b64urlEncode(stateBytes);
+// ---------- PKCE -------------------------------------------------------
+
+function randomBytes(n: number): Uint8Array {
+  const b = new Uint8Array(n);
+  crypto.getRandomValues(b);
+  return b;
+}
+
+export function generateCodeVerifier(): string {
+  // 32 random bytes → 43-char base64url string, well within RFC 7636 limits.
+  return b64urlEncode(randomBytes(32));
+}
+
+export async function codeChallengeS256(verifier: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", enc.encode(verifier));
+  return b64urlEncode(new Uint8Array(digest));
+}
+
+// ---------- OAuth state cookie ----------------------------------------
+
+export async function createOAuthStateCookie(
+  redirect: string,
+  codeVerifier: string,
+): Promise<{ state: string; cookie: string }> {
+  const state = b64urlEncode(randomBytes(16));
   const exp = Math.floor(Date.now() / 1000) + 60 * 10; // 10 min
-  const cookie = await sign<OAuthStatePayload>({ state, redirect, exp });
+  const cookie = await sign<OAuthStatePayload>({
+    state,
+    redirect,
+    codeVerifier,
+    exp,
+  });
   return { state, cookie };
 }
 
@@ -126,7 +171,7 @@ export async function readOAuthState(
 
 export function isEmailAllowed(email: string): boolean {
   const raw = process.env.ALLOWED_EMAILS;
-  if (!raw || !raw.trim()) return true; // no allowlist → allow any verified Google account
+  if (!raw || !raw.trim()) return true;
   const list = raw
     .split(/[,\s]+/)
     .map((s) => s.trim().toLowerCase())
@@ -135,7 +180,6 @@ export function isEmailAllowed(email: string): boolean {
   const e = email.toLowerCase();
   for (const entry of list) {
     if (entry.startsWith("@")) {
-      // domain match
       if (e.endsWith(entry)) return true;
     } else if (entry.includes("@")) {
       if (e === entry) return true;
@@ -144,22 +188,22 @@ export function isEmailAllowed(email: string): boolean {
   return false;
 }
 
-export function getGoogleClientConfig(): {
-  clientId: string;
-  clientSecret: string;
-} {
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  if (!clientId || !clientSecret) {
-    throw new Error(
-      "GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be set for OAuth.",
-    );
+export function getOAuthConfig(): OAuthConfig {
+  const clientId = process.env.OAUTH_CLIENT_ID;
+  if (!clientId) {
+    throw new Error("OAUTH_CLIENT_ID must be set.");
   }
-  return { clientId, clientSecret };
+  return {
+    clientId,
+    authorizeUrl: process.env.OAUTH_AUTHORIZE_URL || DEFAULT_AUTHORIZE_URL,
+    tokenUrl: process.env.OAUTH_TOKEN_URL || DEFAULT_TOKEN_URL,
+    userinfoUrl: process.env.OAUTH_USERINFO_URL || DEFAULT_USERINFO_URL,
+    scopes: process.env.OAUTH_SCOPES || DEFAULT_SCOPES,
+  };
 }
 
 export function resolveBaseUrl(req: Request): string {
-  const envUrl = process.env.AUTH_BASE_URL || process.env.NEXTAUTH_URL;
+  const envUrl = process.env.AUTH_BASE_URL;
   if (envUrl) return envUrl.replace(/\/$/, "");
   const url = new URL(req.url);
   const proto = req.headers.get("x-forwarded-proto") || url.protocol.replace(":", "");
@@ -167,19 +211,22 @@ export function resolveBaseUrl(req: Request): string {
   return `${proto}://${host}`;
 }
 
-export function googleAuthUrl(opts: {
-  clientId: string;
+export function buildAuthorizeUrl(opts: {
+  config: OAuthConfig;
   redirectUri: string;
   state: string;
+  codeChallenge: string;
 }): string {
   const params = new URLSearchParams({
-    client_id: opts.clientId,
+    client_id: opts.config.clientId,
     redirect_uri: opts.redirectUri,
     response_type: "code",
-    scope: "openid email profile",
+    scope: opts.config.scopes,
     state: opts.state,
+    code_challenge: opts.codeChallenge,
+    code_challenge_method: "S256",
     access_type: "online",
     prompt: "select_account",
   });
-  return "https://accounts.google.com/o/oauth2/v2/auth?" + params.toString();
+  return opts.config.authorizeUrl + "?" + params.toString();
 }

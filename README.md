@@ -55,36 +55,62 @@ npm run dev
 | `CODEX_BIN` | spawn する codex バイナリへの絶対パス。未指定なら `vendor/codex/codex-cli/bin/codex.js` → `codex` (PATH) の順で解決。 |
 | `CODEX_DEFAULT_CWD` | 「新しいタスク」ダイアログでデフォルトに入れる作業ディレクトリ。 |
 | `OPENAI_API_KEY` | Codex CLI が呼び出すモデルの認証用 (詳細は upstream の README 参照)。 |
-| `AUTH_SECRET` | **必須**。セッション Cookie の HMAC 署名鍵 (16 文字以上)。`openssl rand -base64 32` で生成。 |
-| `GOOGLE_CLIENT_ID` | **必須**。Google OAuth 2.0 クライアント ID。 |
-| `GOOGLE_CLIENT_SECRET` | **必須**。Google OAuth 2.0 クライアントシークレット。 |
-| `ALLOWED_EMAILS` | ログイン許可リスト。`alice@example.com,@your-company.com` のようにメール or `@` ドメインを並べる。未設定だと **任意の Google アカウントがログイン可能**。 |
-| `AUTH_BASE_URL` | OAuth リダイレクト URL を組み立てるベース URL。未設定ならリクエストヘッダから自動推測。 |
+| `AUTH_SECRET` | **必須**。セッション/state Cookie の HMAC 署名鍵 (16 文字以上)。`openssl rand -base64 32` で生成。 |
+| `OAUTH_CLIENT_ID` | **必須**。OAuth 2.0 クライアント ID (public client)。 |
+| `OAUTH_AUTHORIZE_URL` / `OAUTH_TOKEN_URL` / `OAUTH_USERINFO_URL` | IdP のエンドポイント。デフォルトは Google。 |
+| `OAUTH_SCOPES` | 要求スコープ (デフォルト `openid email profile`)。 |
+| `ALLOWED_EMAILS` | ログイン許可リスト。`alice@example.com,@your-company.com` のようにメール or `@` ドメインを並べる。未設定だと **誰でもログイン可能**。 |
+| `AUTH_BASE_URL` | OAuth リダイレクト URL を組み立てるベース URL。未設定ならリクエストヘッダから自動推測 (Cloud Run など proxy 経由なら明示推奨)。 |
 
-### 認証 (Google OAuth)
+### 認証 (OAuth 2.0 + PKCE, public client)
 
 Web UI と API ルートは Next.js Middleware で保護されており、未ログインだと
 ブラウザは `/login` にリダイレクト、API は `401 Unauthorized` を返します。
-ログインは Google OAuth 2.0 のみ。
+フローは **OAuth 2.0 Authorization Code + PKCE (S256)** で、トークン交換
+時に client_secret は送りません (= public client)。IdP は環境変数で差し替え
+可能で、デフォルトは Google のエンドポイント。
 
-セットアップ:
+#### IdP の選び方
+
+PKCE 単独で認証が成立する必要があるため、**public client をサポートする
+IdP** を選んでください:
+
+| IdP | 動作 | メモ |
+| --- | --- | --- |
+| Auth0 / Keycloak / Okta / Azure AD / Cognito 等 | ✅ public client 設定で動く | Cloud Run / 任意 HTTPS リダイレクト URI 可 |
+| Google "Desktop app" 型 | ⚠️ ローカル開発のみ | redirect URI が loopback (`http://127.0.0.1[:port]/...`) 限定 |
+| Google "Web application" 型 | ❌ 非対応 | token endpoint が client_secret を必須とするため動かない |
+
+#### Google (Desktop, ローカル開発のみ) の例
 
 1. [Google Cloud Console](https://console.cloud.google.com/) で OAuth 2.0
-   クライアント ID を作成 (Application type: **Web application**)。
-2. Authorized redirect URIs に下記を追加:
-   - `http://localhost:3000/api/auth/callback` (開発用)
-   - `https://<your-host>/api/auth/callback` (本番用)
-3. クライアント ID/シークレットを `.env.local` (またはコンテナの `.env`) に設定。
-4. `AUTH_SECRET` をランダム値で設定 (`openssl rand -base64 32`)。
-5. 本番では必ず `ALLOWED_EMAILS` を設定して許可アカウントを絞ること
-   (codex はサーバ上で任意コードを実行できるため、不特定のログインは危険)。
+   クライアント ID を作成 (Application type: **Desktop app**)。
+2. `.env.local` に設定:
+   ```env
+   OAUTH_CLIENT_ID=<client id>
+   AUTH_SECRET=$(openssl rand -base64 32)
+   ALLOWED_EMAILS=you@example.com
+   AUTH_BASE_URL=http://127.0.0.1:3000
+   ```
+3. `npm run dev` で `http://127.0.0.1:3000` を開く (※ `localhost` ではなく
+   `127.0.0.1` を使うと Google の loopback 判定にマッチします)。
 
-提供エンドポイント:
+#### 他の IdP に差し替え (例: Keycloak)
+
+```env
+OAUTH_CLIENT_ID=codexweb
+# secret 不要 (Keycloak で public client にする)
+OAUTH_AUTHORIZE_URL=https://kc.example.com/realms/main/protocol/openid-connect/auth
+OAUTH_TOKEN_URL=https://kc.example.com/realms/main/protocol/openid-connect/token
+OAUTH_USERINFO_URL=https://kc.example.com/realms/main/protocol/openid-connect/userinfo
+```
+
+#### 提供エンドポイント
 
 | Method | Path | 説明 |
 | --- | --- | --- |
-| GET | `/api/auth/login` | Google の同意画面へリダイレクト (`?redirect=/path` 対応) |
-| GET | `/api/auth/callback` | Google からのコールバック (内部用) |
+| GET | `/api/auth/login` | IdP の同意画面へリダイレクト (`?redirect=/path` 対応) |
+| GET | `/api/auth/callback` | IdP からのコールバック (内部用) |
 | GET/POST | `/api/auth/logout` | セッション Cookie を破棄 |
 | GET | `/api/auth/me` | 現在ログイン中のユーザ情報 (未ログインなら `{ user: null }`) |
 
@@ -134,6 +160,98 @@ docker run --rm -p 3000:3000 \
 ```
 
 → ブラウザで http://localhost:3000
+
+### Cloud Run
+
+`main` への push で `.github/workflows/cloudrun.yml` が起動し、Artifact
+Registry にイメージを push したあと Cloud Run にデプロイします。
+**シングルインスタンス前提** で動作するよう設定済み (`min-instances=1`,
+`max-instances=1`, `--timeout=3600`) で、これはタスクストアが
+インメモリ実装である現状の制約に合わせたものです。
+
+#### 前提セットアップ (Google Cloud 側、一度だけ)
+
+```bash
+# 変数
+PROJECT_ID=your-project
+REGION=asia-northeast1
+REPO=codexweb            # Artifact Registry repo 名
+SERVICE=codexweb         # Cloud Run service 名
+
+# API 有効化
+gcloud services enable run.googleapis.com artifactregistry.googleapis.com \
+  secretmanager.googleapis.com iamcredentials.googleapis.com \
+  --project="$PROJECT_ID"
+
+# Artifact Registry リポジトリ
+gcloud artifacts repositories create "$REPO" \
+  --repository-format=docker --location="$REGION" --project="$PROJECT_ID"
+
+# デプロイ用 Service Account
+SA=codexweb-deployer
+gcloud iam service-accounts create "$SA" --project="$PROJECT_ID"
+SA_EMAIL="$SA@$PROJECT_ID.iam.gserviceaccount.com"
+for role in roles/run.admin roles/artifactregistry.writer \
+            roles/iam.serviceAccountUser roles/secretmanager.secretAccessor; do
+  gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    --member="serviceAccount:$SA_EMAIL" --role="$role"
+done
+
+# Workload Identity Federation (GitHub → GCP の keyless 認証)
+gcloud iam workload-identity-pools create github \
+  --location=global --project="$PROJECT_ID"
+gcloud iam workload-identity-pools providers create-oidc github \
+  --location=global --workload-identity-pool=github \
+  --issuer-uri=https://token.actions.githubusercontent.com \
+  --attribute-mapping='google.subject=assertion.sub,attribute.repository=assertion.repository' \
+  --attribute-condition='assertion.repository=="<OWNER>/codexweb"' \
+  --project="$PROJECT_ID"
+PROJECT_NUM=$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')
+gcloud iam service-accounts add-iam-policy-binding "$SA_EMAIL" \
+  --role=roles/iam.workloadIdentityUser \
+  --member="principalSet://iam.googleapis.com/projects/$PROJECT_NUM/locations/global/workloadIdentityPools/github/attribute.repository/<OWNER>/codexweb"
+
+# Secret Manager にシークレット投入
+printf "%s" "$(openssl rand -base64 32)" | gcloud secrets create AUTH_SECRET --data-file=- --project="$PROJECT_ID"
+printf "%s" "<your-public-client-id>"    | gcloud secrets create OAUTH_CLIENT_ID --data-file=- --project="$PROJECT_ID"
+printf "%s" "sk-..."                     | gcloud secrets create OPENAI_API_KEY --data-file=- --project="$PROJECT_ID"
+```
+
+> **IdP の用意**: Cloud Run 上では public client をサポートする IdP
+> (Auth0 / Keycloak / Cognito 等) を使ってください。Google の Web app 型は
+> client_secret 必須のため非対応です。`OAUTH_AUTHORIZE_URL` /
+> `OAUTH_TOKEN_URL` / `OAUTH_USERINFO_URL` は GitHub Actions の Variables
+> で渡すか、ワークフローを編集して `--set-env-vars` に追加してください。
+
+#### GitHub 側の設定
+
+リポジトリ Settings → Secrets and variables → Actions → **Variables** タブで:
+
+| Variable | 例 |
+| --- | --- |
+| `GCP_PROJECT_ID` | `your-project` |
+| `GCP_REGION` | `asia-northeast1` |
+| `ARTIFACT_REGISTRY_REPO` | `codexweb` |
+| `CLOUD_RUN_SERVICE` | `codexweb` |
+| `WIF_PROVIDER` | `projects/<NUM>/locations/global/workloadIdentityPools/github/providers/github` |
+| `WIF_SERVICE_ACCOUNT` | `codexweb-deployer@<PROJECT_ID>.iam.gserviceaccount.com` |
+| `ALLOWED_EMAILS` | (推奨) 許可メール/ドメイン |
+| `AUTH_BASE_URL` | (推奨) `https://<service>-<hash>-<region>.a.run.app` |
+| `CODEX_DEFAULT_CWD` | (任意) 例 `/tmp` |
+
+初回デプロイで URL が確定するので、その URL を Google Cloud Console の
+OAuth クライアントの "Authorized redirect URIs" にも追加してください
+(`<URL>/api/auth/callback`)。あわせて `AUTH_BASE_URL` を変数にセットして
+2 回目以降のデプロイで使うのが確実です。
+
+#### 制約メモ
+
+- タスクは **インメモリ** 保持なので、リビジョン入れ替え (新規デプロイ)
+  で進行中タスクは失われます。本番運用するなら Firestore 等への永続化が
+  必要 (現状未対応)。
+- `--timeout=3600` を指定しているので Cloud Run としては 60 分まで SSE が
+  維持されます。それ以上のタスクは途中で切れるので、ローカル/専用 VM での
+  運用を推奨。
 
 ## トラブルシュート
 
