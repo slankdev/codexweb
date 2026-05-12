@@ -103,58 +103,6 @@ docker run --rm -p 3000:3000 \
 
 → ブラウザで http://localhost:3000
 
-### 起動時に何が走るか
-
-エントリーポイント (`scripts/docker-entrypoint.sh`) が:
-
-1. `OPENAI_API_KEY` が設定されていて `~/.codex/auth.json` が無ければ、
-   `codex login --with-api-key` を自動実行 (key を auth.json に焼き込む)
-2. `node server.js` を exec
-
-Codex CLI の Responses WebSocket endpoint は `OPENAI_API_KEY` 環境変数だけ
-だと認証通らないので、起動時に `auth.json` を作っておく必要があります。
-
-### 既に host で `codex login` 済みの場合
-
-`~/.codex` をそのまま bind-mount すれば、コンテナ内 login をスキップして
-ホストの auth/履歴/memories をそのまま使えます:
-
-```bash
-docker run --rm -p 3000:3000 \
-  --env-file .env \
-  -v "$HOME/.codex":/root/.codex \
-  -v "$PWD":/workspace \
-  -e CODEX_DEFAULT_CWD=/workspace \
-  ghcr.io/<owner>/codexweb:latest
-```
-
-### その他
-
-- イメージには `@openai/codex` を `npm i -g` で同梱。別バイナリを使いたければ
-  マウントして `CODEX_BIN` を上書き
-- コンテナは **root で起動するのが既定** (bind mount を traverse するため)。
-  非 root で動かしたい場合は `--user <uid>` を付け、ホスト側ディレクトリの
-  権限がその UID で参照可能なことを確認
-
-ビルド時に codex CLI の同梱を抑止する:
-
-```bash
-docker build --build-arg INSTALL_CODEX=false -t codexweb .
-```
-
-### Vercel
-
-1. Vercel ダッシュボードで GitHub リポジトリを連携 (`Add New > Project`)
-2. Framework Preset は自動検出される `Next.js` のままで OK
-3. Environment Variables に `OPENAI_API_KEY` を設定
-4. `main` への push で自動デプロイ
-
-**⚠️ 制限**: Vercel の serverless runtime ではこのアプリの中核機能は動きません。
-`codex` バイナリが存在しないこと、SSE が関数タイムアウト (Hobby 60秒 / Pro 300秒)
-で切れること、メモリ内タスク state が関数インスタンス間で共有されないことが
-主な理由です。**UI とビルドの動作確認用** と割り切ってください。
-実利用にはコンテナデプロイを推奨します。
-
 ## トラブルシュート
 
 ### `Codex process error: spawn codex EACCES`
